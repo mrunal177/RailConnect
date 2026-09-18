@@ -1,0 +1,16 @@
+{
+  "name": "railconnect-ai-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RailConnect AI — Intelligent Railway Reservation & Passenger Management Platform Template",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "npm --prefix client run dev",
+    "dev:server": "npm --prefix server run dev",
+    "install:all": "npm install && npm --prefix client install && npm --prefix server install",
+    "build:client": "npm --prefix client run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
