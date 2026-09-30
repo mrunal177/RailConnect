@@ -1,0 +1,8 @@
+{
+  "name": "Remix Smart Railway - Reservation \u0026 Passenger Intelligence System",
+  "description": "Enterprise railway management system featuring ACID booking transactions, real-time train tracking, AI waitlist prediction, and analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
