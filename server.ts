@@ -7,7 +7,8 @@ import { GoogleGenAI } from '@google/genai';
 import { pool } from './src/db/index.ts';
 import { requireAuth, requireRole, AuthRequest } from './src/middleware/auth.ts';
 import { predictWaitlistConfirmation, analyzeSentiment } from './src/lib/ml.ts';
-import { getSimulatedTrainPosition, STATIONS_DB } from './src/lib/tracking.ts';
+import { STATIONS_DB } from './src/lib/tracking.ts';
+import { getRailRadarTracking } from './src/lib/railradar.ts';
 
 dotenv.config();
 
@@ -25,8 +26,9 @@ async function startServer() {
   // ----------------------------------------------------
   app.get('/api/config', (_req, res) => {
     res.json({
-      googleMapsApiKey: process.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyDTe6S8VPtLsa_tYRDVwlaSdIO1Nc-QILM',
-      trackingMode: process.env.TRAIN_LOCATION_MODE || 'demo',
+      // RailRadar and weather credentials remain server-only.
+      maptilerApiKey: process.env.VITE_MAPTILER_API_KEY || '',
+      trackingMode: process.env.RAILRADAR_API_KEY ? 'live' : 'demo',
       systemTime: '2026-09-27T06:01:07-07:00',
     });
   });
@@ -678,7 +680,7 @@ Keep responses concise, helpful, polite, and well-structured with bullet points 
         return res.status(404).json({ error: 'Train not found' });
       }
       const t = trainRes.rows[0];
-      const tracking = getSimulatedTrainPosition(
+      const tracking = await getRailRadarTracking(
         t.train_number,
         t.train_name,
         t.source,
@@ -696,8 +698,8 @@ Keep responses concise, helpful, polite, and well-structured with bullet points 
   app.get('/api/tracking/active', async (_req: Request, res: Response) => {
     try {
       const trainsRes = await pool.query('SELECT * FROM trains LIMIT 10');
-      const activeTracking = trainsRes.rows.map((t: any) =>
-        getSimulatedTrainPosition(
+      const activeTracking = await Promise.all(trainsRes.rows.map((t: any) =>
+        getRailRadarTracking(
           t.train_number,
           t.train_name,
           t.source,
@@ -705,12 +707,25 @@ Keep responses concise, helpful, polite, and well-structured with bullet points 
           t.speed_kmph,
           t.delay_minutes
         )
-      );
+      ));
       res.json(activeTracking);
     } catch (err: any) {
       console.error('Error fetching active trains tracking:', err);
       res.status(500).json({ error: 'Failed to fetch active tracking' });
     }
+  });
+
+  // Proxy weather requests so the OpenWeather key never reaches the browser.
+  app.get('/api/weather', async (req: Request, res: Response) => {
+    const lat = Number(req.query.lat); const lon = Number(req.query.lon);
+    const apiKey = process.env.OPENWEATHER_API_KEY;
+    if (!apiKey || !Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(204).end();
+    try {
+      const weather = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${apiKey}`, { signal: AbortSignal.timeout(8_000) });
+      if (!weather.ok) return res.status(weather.status).json({ error: 'Weather service unavailable' });
+      const data: any = await weather.json();
+      res.json({ temperature: Math.round(data.main?.temp), description: data.weather?.[0]?.description || 'Unknown', windKmph: Math.round((data.wind?.speed || 0) * 3.6) });
+    } catch { res.status(502).json({ error: 'Weather service unavailable' }); }
   });
 
   // ----------------------------------------------------

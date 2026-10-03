@@ -4,7 +4,6 @@ import {
   signInWithPopup,
   signOut as firebaseSignOut,
   onAuthStateChanged,
-  signInAnonymously,
 } from 'firebase/auth';
 import { auth, googleAuthProvider } from '../lib/firebase.ts';
 
@@ -24,9 +23,6 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   signInWithGoogle: () => Promise<void>;
-  signInDemoPassenger: () => Promise<void>;
-  signInDemoStaff: () => Promise<void>;
-  signInDemoAdmin: () => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -41,19 +37,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Sync profile from backend
   const fetchProfile = async (idToken: string) => {
-    try {
-      const res = await fetch('/api/auth/me', {
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-        },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setProfile(data);
-      }
-    } catch (e) {
-      console.error('Failed to sync profile:', e);
+    const res = await fetch('/api/auth/me', {
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Could not sync your account with the server.');
     }
+    setProfile(data);
   };
 
   useEffect(() => {
@@ -80,51 +73,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signInWithGoogle = async () => {
     try {
       setLoading(true);
-      await signInWithPopup(auth, googleAuthProvider);
+      googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
+      const credential = await signInWithPopup(auth, googleAuthProvider);
+      const idToken = await credential.user.getIdToken();
+      setUser(credential.user);
+      setToken(idToken);
+      await fetchProfile(idToken);
     } catch (err: any) {
       console.error('Google Sign-In failed:', err);
-      // Fallback to demo anonymous signin if popups blocked
-      await signInAnonymously(auth);
+      if (auth.currentUser) await firebaseSignOut(auth);
+      setUser(null);
+      setToken(null);
+      setProfile(null);
+      throw new Error(err?.message || 'Google Sign-In could not be completed.');
     } finally {
       setLoading(false);
     }
-  };
-
-  // Switch demo personas easily for college viva and project demonstration
-  const signInDemoPassenger = async () => {
-    setProfile({
-      id: 3,
-      uid: 'uid_passenger_priya',
-      name: 'Priya Kulkarni',
-      email: 'priya.k@gmail.com',
-      phone: '+91 97654 32109',
-      role: 'PASSENGER',
-      created_at: new Date().toISOString(),
-    });
-  };
-
-  const signInDemoStaff = async () => {
-    setProfile({
-      id: 2,
-      uid: 'uid_staff_arun',
-      name: 'Arun Sharma (Duty Officer)',
-      email: 'arun.staff@railway.gov.in',
-      phone: '+91 98110 12345',
-      role: 'STAFF',
-      created_at: new Date().toISOString(),
-    });
-  };
-
-  const signInDemoAdmin = async () => {
-    setProfile({
-      id: 1,
-      uid: 'uid_mrunal_admin',
-      name: 'Mrunal Baravkar (Admin)',
-      email: 'mrunal.r.baravkar@gmail.com',
-      phone: '+91 98230 45678',
-      role: 'ADMIN',
-      created_at: new Date().toISOString(),
-    });
   };
 
   const signOut = async () => {
@@ -151,9 +115,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         token,
         loading,
         signInWithGoogle,
-        signInDemoPassenger,
-        signInDemoStaff,
-        signInDemoAdmin,
         signOut,
         refreshProfile,
       }}

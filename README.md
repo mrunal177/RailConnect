@@ -83,3 +83,11 @@ npm run dev
 # 3. Access web application
 http://localhost:3000
 ```
+
+### Google Authentication setup
+
+The app uses Firebase Authentication for real Google sign-in. Before using it outside its original Firebase project setup:
+
+1. In Firebase Console, open **Authentication → Sign-in method** and enable **Google**.
+2. In **Authentication → Settings → Authorized domains**, add `localhost` for local development and your deployed domain for production.
+3. Download a Firebase service-account key and set its one-line JSON in `FIREBASE_SERVICE_ACCOUNT_JSON` in `.env`. This is used only by Express to verify Firebase ID tokens; never commit it or expose it in browser code.

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ShieldAlert, Send, CheckCircle2, Loader2 } from 'lucide-react';
+import { authenticatedFetch } from '../lib/authenticated-fetch.ts';
 
 interface ComplaintFormProps {
   bookingId?: number;
@@ -34,11 +35,10 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({ bookingId, pnr, on
     setError(null);
 
     try {
-      const res = await fetch('/api/complaints', {
+      const res = await authenticatedFetch('/api/complaints', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: 'Bearer mock_or_active_token',
         },
         body: JSON.stringify({
           bookingId: bookingId || null,

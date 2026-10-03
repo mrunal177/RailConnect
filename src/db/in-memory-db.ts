@@ -370,6 +370,7 @@ export class InMemoryDatabase {
       const [uid, name, email, role] = params;
       let user = this.users.find((u) => u.uid === uid || u.email === email);
       if (user) {
+        user.uid = uid;
         user.email = email;
         user.name = name;
       } else {

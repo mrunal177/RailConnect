@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { MessageSquare, Star, Send, Loader2, CheckCircle2, Sparkles } from 'lucide-react';
+import { authenticatedFetch } from '../lib/authenticated-fetch.ts';
 
 interface FeedbackFormProps {
   bookingId?: number;
@@ -21,11 +22,10 @@ export const FeedbackForm: React.FC<FeedbackFormProps> = ({ bookingId, onSubmitt
     setError(null);
 
     try {
-      const res = await fetch('/api/feedback', {
+      const res = await authenticatedFetch('/api/feedback', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer mock_or_active_token`,
         },
         body: JSON.stringify({
           bookingId: bookingId || null,

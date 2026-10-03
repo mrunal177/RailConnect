@@ -38,6 +38,7 @@ import { DbmsLabModal } from './components/DbmsLabModal.tsx';
 import { CoachLayout } from './components/CoachLayout.tsx';
 import { VoiceAssistantChatbot } from './components/VoiceAssistantChatbot.tsx';
 import { TrainTrackingData } from './lib/tracking.ts';
+import { authenticatedFetch } from './lib/authenticated-fetch.ts';
 import trainDaylightPastel from './assets/images/train_daylight_pastel_1790515202398.jpg';
 
 export default function App() {
@@ -45,9 +46,6 @@ export default function App() {
     user,
     profile,
     signInWithGoogle,
-    signInDemoPassenger,
-    signInDemoStaff,
-    signInDemoAdmin,
     signOut,
   } = useAuth();
   const { language, setLanguage, t } = useLanguage();
@@ -85,7 +83,7 @@ export default function App() {
   // Tracking state
   const [liveTrains, setLiveTrains] = useState<TrainTrackingData[]>([]);
   const [trackedTrain, setTrackedTrain] = useState<TrainTrackingData | null>(null);
-  const [apiKey, setApiKey] = useState('AIzaSyDTe6S8VPtLsa_tYRDVwlaSdIO1Nc-QILM');
+  const [maptilerApiKey, setMaptilerApiKey] = useState('');
 
   // Passenger bookings & complaints lists
   const [myBookings, setMyBookings] = useState<any[]>([]);
@@ -96,7 +94,26 @@ export default function App() {
 
   // Modals
   const [isDbmsLabOpen, setIsDbmsLabOpen] = useState(false);
-  const [isRaisingComplaint, setIsRaisingComplaint] = useState(false);
+  const [authPromptAction, setAuthPromptAction] = useState<string | null>(null);
+  const [authPromptError, setAuthPromptError] = useState<string | null>(null);
+
+  // Searching, train details, and live tracking are public. Anything that reads
+  // private data or changes a reservation must start with authentication.
+  const isAuthenticated = Boolean(user);
+  const signedInName = profile?.name || user?.displayName || user?.email || 'Google user';
+  const signedInRole = profile?.role || 'Authenticated passenger';
+  const requireAuthentication = (action: string) => {
+    if (isAuthenticated) return true;
+    setAuthPromptError(null);
+    setAuthPromptAction(action);
+    return false;
+  };
+
+  const openComplaintForm = () => {
+    if (requireAuthentication('raise a complaint')) {
+      setCurrentTab('COMPLAINTS');
+    }
+  };
 
   // Initial fetch: Search trains & load active tracking
   const executeSearch = async () => {
@@ -136,7 +153,7 @@ export default function App() {
 
   const fetchUserBookings = async () => {
     try {
-      const res = await fetch('/api/bookings/my');
+      const res = await authenticatedFetch('/api/bookings/my');
       if (res.ok) {
         const data = await res.json();
         setMyBookings(data);
@@ -147,12 +164,13 @@ export default function App() {
   };
 
   const fetchAdminStats = async () => {
+    if (profile?.role !== 'ADMIN') return;
     try {
       const [ovRes, compRes, fbRes, logsRes] = await Promise.all([
-        fetch('/api/analytics/overview'),
-        fetch('/api/complaints'),
-        fetch('/api/feedback'),
-        fetch('/api/admin/audit-logs'),
+        authenticatedFetch('/api/analytics/overview'),
+        authenticatedFetch('/api/complaints'),
+        authenticatedFetch('/api/feedback'),
+        authenticatedFetch('/api/admin/audit-logs'),
       ]);
 
       if (ovRes.ok) setOverviewStats(await ovRes.json());
@@ -167,7 +185,7 @@ export default function App() {
   useEffect(() => {
     executeSearch();
     fetchActiveTracking();
-    fetchAdminStats();
+    fetch('/api/config').then((res) => res.ok ? res.json() : null).then((config) => setMaptilerApiKey(config?.maptilerApiKey || '')).catch(() => undefined);
 
     // 10s auto-refresh for live train coordinates
     const interval = setInterval(() => {
@@ -180,6 +198,7 @@ export default function App() {
   useEffect(() => {
     if (profile) {
       fetchUserBookings();
+      fetchAdminStats();
     }
   }, [profile]);
 
@@ -201,9 +220,10 @@ export default function App() {
   };
 
   const handleCompleteBooking = async (paymentMethod: string) => {
+    if (!requireAuthentication('complete a booking')) return;
     if (!selectedTrain || !selectedSeat) return;
 
-    const res = await fetch('/api/bookings/reserve', {
+    const res = await authenticatedFetch('/api/bookings/reserve', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -244,9 +264,10 @@ export default function App() {
   };
 
   const handleCancelTicket = async (bookingId: number) => {
+    if (!requireAuthentication('cancel a ticket')) return;
     if (!confirm('Are you sure you want to cancel this booking and initiate a refund?')) return;
     try {
-      const res = await fetch(`/api/bookings/${bookingId}/cancel`, { method: 'POST' });
+      const res = await authenticatedFetch(`/api/bookings/${bookingId}/cancel`, { method: 'POST' });
       if (res.ok) {
         alert('Booking cancelled successfully! Seat has been released and refund calculated.');
         fetchUserBookings();
@@ -303,7 +324,9 @@ export default function App() {
               {t('liveGisMap')}
             </button>
             <button
-              onClick={() => setCurrentTab('MY_BOOKINGS')}
+              onClick={() => {
+                if (requireAuthentication('view your journeys')) setCurrentTab('MY_BOOKINGS');
+              }}
               className={`px-3.5 py-2 rounded-xl transition-all cursor-pointer ${
                 currentTab === 'MY_BOOKINGS'
                   ? 'bg-blue-600 text-white shadow-sm'
@@ -313,7 +336,9 @@ export default function App() {
               {t('myJourneys')}
             </button>
             <button
-              onClick={() => setCurrentTab('COMPLAINTS')}
+              onClick={() => {
+                if (requireAuthentication('use the grievance portal')) setCurrentTab('COMPLAINTS');
+              }}
               className={`px-3.5 py-2 rounded-xl transition-all cursor-pointer ${
                 currentTab === 'COMPLAINTS'
                   ? 'bg-blue-600 text-white shadow-sm'
@@ -337,7 +362,7 @@ export default function App() {
             )}
           </nav>
 
-          {/* Right Header: Language Selector, Role switcher & Profile */}
+          {/* Right Header: Language selector and authenticated profile */}
           <div className="flex items-center gap-2.5">
             {/* Language Selection Section */}
             <div className="flex items-center gap-1.5 bg-slate-100 px-2.5 py-1.5 rounded-xl border border-slate-200 shadow-xs">
@@ -354,55 +379,30 @@ export default function App() {
               </select>
             </div>
 
-            {/* Persona Switcher Quick Dropdown */}
-            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-[11px] font-semibold">
-              <span className="text-slate-500 px-1 hidden xl:inline">{t('role')}:</span>
-              <button
-                onClick={signInDemoPassenger}
-                className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
-                  profile?.role === 'PASSENGER'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {t('passenger')}
-              </button>
-              <button
-                onClick={signInDemoStaff}
-                className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
-                  profile?.role === 'STAFF'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {t('dutyStaff')}
-              </button>
-              <button
-                onClick={signInDemoAdmin}
-                className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
-                  profile?.role === 'ADMIN'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {t('admin')}
-              </button>
-            </div>
-
             {/* User Profile / Login */}
-            {profile ? (
+            {user ? (
               <div className="flex items-center gap-2 pl-1">
                 <div className="w-8 h-8 rounded-full bg-blue-100 border border-blue-300 flex items-center justify-center font-bold text-xs text-blue-700 shadow-xs">
-                  {profile.name.charAt(0)}
+                  {signedInName.charAt(0).toUpperCase()}
                 </div>
                 <div className="hidden xl:block text-left text-xs leading-none">
-                  <span className="font-bold text-slate-800 block">{profile.name}</span>
-                  <span className="text-[10px] text-slate-500">{profile.role}</span>
+                  <span className="font-bold text-slate-800 block">{signedInName}</span>
+                  <span className="text-[10px] text-slate-500">{signedInRole}</span>
                 </div>
+                <button
+                  onClick={signOut}
+                  title="Sign out"
+                  className="rounded-xl p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+                >
+                  <LogOut className="h-4 w-4" />
+                </button>
               </div>
             ) : (
               <button
-                onClick={signInWithGoogle}
+                onClick={() => {
+                  setAuthPromptError(null);
+                  setAuthPromptAction('access your account');
+                }}
                 className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-sm shadow-blue-600/20 transition-all"
               >
                 Sign In
@@ -683,7 +683,9 @@ export default function App() {
                       travelClass={travelClass}
                       seats={seatMap?.seats || []}
                       selectedSeat={selectedSeat}
-                      onSelectSeat={setSelectedSeat}
+                      onSelectSeat={(seat) => {
+                        if (requireAuthentication('select a seat for booking')) setSelectedSeat(seat);
+                      }}
                       trainNumber={selectedTrain.train_number}
                       coachName="B2"
                     />
@@ -701,6 +703,9 @@ export default function App() {
                         <input
                           type="text"
                           value={passengerName}
+                          onFocus={(e) => {
+                            if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
+                          }}
                           onChange={(e) => setPassengerName(e.target.value)}
                           className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
                         />
@@ -714,6 +719,9 @@ export default function App() {
                           <input
                             type="number"
                             value={passengerAge}
+                            onFocus={(e) => {
+                              if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
+                            }}
                             onChange={(e) => setPassengerAge(parseInt(e.target.value, 10))}
                             className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
                           />
@@ -724,6 +732,9 @@ export default function App() {
                           </label>
                           <select
                             value={passengerGender}
+                            onFocus={(e) => {
+                              if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
+                            }}
                             onChange={(e) => setPassengerGender(e.target.value)}
                             className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
                           >
@@ -737,7 +748,9 @@ export default function App() {
                       {/* Proceed to Payment CTA */}
                       <button
                         disabled={!selectedSeat}
-                        onClick={() => setIsPaymentOpen(true)}
+                        onClick={() => {
+                          if (requireAuthentication('proceed to payment')) setIsPaymentOpen(true);
+                        }}
                         className="w-full mt-2 py-3.5 px-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 font-bold text-xs text-white flex items-center justify-center gap-2 shadow-md shadow-blue-600/20 transition-all disabled:opacity-40 cursor-pointer"
                       >
                         <CreditCard className="w-4 h-4" />
@@ -779,7 +792,7 @@ export default function App() {
                 <DigitalTicket
                   ticket={currentTicket}
                   onCancelTicket={() => handleCancelTicket(currentTicket.id)}
-                  onRaiseComplaint={() => setIsRaisingComplaint(true)}
+                  onRaiseComplaint={openComplaintForm}
                 />
               </div>
             )}
@@ -787,13 +800,13 @@ export default function App() {
         </div>
       ) : (
         <main className="flex-1 max-w-7xl mx-auto w-full p-4 lg:p-8">
-          {/* TAB 2: LIVE GIS TRAIN TRACKING ON GOOGLE MAPS */}
+          {/* TAB 2: LIVE GIS TRAIN TRACKING */}
           {currentTab === 'TRACKING' && (
             <div className="space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <span className="text-xs font-bold uppercase tracking-widest text-blue-600">
-                    Google Maps GIS Integration
+                    RailRadar + MapLibre GIS Integration
                   </span>
                   <h2 className="text-2xl font-black text-slate-900">Live Network Train Tracking</h2>
                 </div>
@@ -820,7 +833,7 @@ export default function App() {
 
               {/* Map Container */}
               <div className="w-full h-[600px] shadow-sm rounded-3xl overflow-hidden border border-slate-200">
-                <TrainTrackingMap apiKey={apiKey} selectedTrain={trackedTrain} />
+                <TrainTrackingMap maptilerApiKey={maptilerApiKey} selectedTrain={trackedTrain} />
               </div>
 
               {/* Live Corridor Stats */}
@@ -886,7 +899,7 @@ export default function App() {
                       key={b.id}
                       ticket={b}
                       onCancelTicket={() => handleCancelTicket(b.id)}
-                      onRaiseComplaint={() => setIsRaisingComplaint(true)}
+                      onRaiseComplaint={openComplaintForm}
                     />
                   ))}
                 </div>
@@ -1086,6 +1099,62 @@ export default function App() {
       <VoiceAssistantChatbot />
 
       {/* MODALS */}
+      {authPromptAction && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="auth-prompt-title"
+        >
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl shadow-slate-950/25">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+              <ShieldCheck className="h-6 w-6" />
+            </div>
+            <div className="text-center">
+              <h2 id="auth-prompt-title" className="text-xl font-black text-slate-900">
+                Sign in to continue
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Please sign in to {authPromptAction}. You can continue browsing trains and live tracking without an account.
+              </p>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              <button
+                onClick={async () => {
+                  try {
+                    setAuthPromptError(null);
+                    await signInWithGoogle();
+                    setAuthPromptAction(null);
+                  } catch (error: any) {
+                    setAuthPromptError(
+                      error?.message || 'Google Sign-In could not be completed. Please try again.'
+                    );
+                  }
+                }}
+                className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-bold text-white shadow-md shadow-blue-600/20 transition-colors hover:bg-blue-500"
+              >
+                Sign in with Google
+              </button>
+              {authPromptError && (
+                <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs leading-5 text-rose-700">
+                  {authPromptError}
+                </p>
+              )}
+              <button
+                onClick={() => {
+                  setAuthPromptError(null);
+                  setAuthPromptAction(null);
+                }}
+                className="w-full px-4 py-2 text-xs font-semibold text-slate-500 transition-colors hover:text-slate-800"
+              >
+                Continue browsing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isPaymentOpen && selectedTrain && selectedSeat && (
         <PaymentModal
           amount={Math.round(parseFloat(selectedTrain.base_fare) * 1.3)}

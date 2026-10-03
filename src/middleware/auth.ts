@@ -17,10 +17,16 @@ export const requireAuth = async (
     return res.status(401).json({ error: 'Unauthorized: Missing or invalid authentication token' });
   }
 
-  const token = authHeader.split('Bearer ')[1];
+  const token = authHeader.slice('Bearer '.length);
+  let decodedToken: DecodedIdToken;
   try {
-    const decodedToken = await adminAuth.verifyIdToken(token);
-    
+    decodedToken = await adminAuth.verifyIdToken(token);
+  } catch (error) {
+    console.error('Error verifying Firebase ID token:', error);
+    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+  }
+
+  try {
     // Find or sync DB user record
     const userResult = await pool.query(
       'SELECT id, role, email, name FROM users WHERE uid = $1',
@@ -34,14 +40,13 @@ export const requireAuth = async (
       // Auto-register user into PostgreSQL
       const name = decodedToken.name || (decodedToken.email ? decodedToken.email.split('@')[0] : 'Passenger');
       const email = decodedToken.email || `${decodedToken.uid}@railway.local`;
-      const role = (email.toLowerCase().includes('admin') || email.toLowerCase().includes('mrunal')) ? 'ADMIN' : 'PASSENGER';
       
       const insertResult = await pool.query(
         `INSERT INTO users (uid, name, email, role) 
-         VALUES ($1, $2, $3, $4) 
-         ON CONFLICT (uid) DO UPDATE SET email = EXCLUDED.email 
+         VALUES ($1, $2, $3, 'PASSENGER') 
+         ON CONFLICT (email) DO UPDATE SET uid = EXCLUDED.uid, name = EXCLUDED.name 
          RETURNING id, role`,
-        [decodedToken.uid, name, email, role]
+        [decodedToken.uid, name, email]
       );
       dbUserId = insertResult.rows[0].id;
       dbRole = insertResult.rows[0].role;
@@ -57,8 +62,8 @@ export const requireAuth = async (
     };
     next();
   } catch (error) {
-    console.error('Error verifying Firebase ID token:', error);
-    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+    console.error('Error syncing Firebase user with database:', error);
+    return res.status(500).json({ error: 'Could not sync your account with the database' });
   }
 };
 
