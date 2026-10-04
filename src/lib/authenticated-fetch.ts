@@ -1,18 +1,16 @@
-import { auth } from './firebase.ts';
+import { supabase } from './supabase.ts';
 
 /**
- * Sends the currently signed-in Firebase user's ID token with a request.
- * Protected Express routes verify this token with Firebase Admin.
+ * Sends the current Supabase access token to protected Express routes.
  */
 export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
     throw new Error('Please sign in with Google before continuing.');
   }
 
-  const idToken = await currentUser.getIdToken();
   const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${idToken}`);
+  headers.set('Authorization', `Bearer ${session.access_token}`);
 
   return fetch(input, { ...init, headers });
 }

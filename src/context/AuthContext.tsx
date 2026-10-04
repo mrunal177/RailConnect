@@ -1,11 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import {
-  User,
-  signInWithPopup,
-  signOut as firebaseSignOut,
-  onAuthStateChanged,
-} from 'firebase/auth';
-import { auth, googleAuthProvider } from '../lib/firebase.ts';
+import { Session, User } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase.ts';
 
 export interface UserProfile {
   id: number;
@@ -49,39 +44,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setProfile(data);
   };
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
-        try {
-          const idToken = await currentUser.getIdToken();
-          setToken(idToken);
-          await fetchProfile(idToken);
-        } catch (e) {
-          console.error('Error fetching auth token:', e);
-        }
-      } else {
-        setToken(null);
+  const applySession = async (session: Session | null) => {
+    const currentUser = session?.user ?? null;
+    setUser(currentUser);
+    setToken(session?.access_token ?? null);
+    if (session?.access_token) {
+      try {
+        await fetchProfile(session.access_token);
+      } catch (error) {
+        console.error('Error fetching auth profile:', error);
         setProfile(null);
       }
-      setLoading(false);
-    });
+    } else {
+      setProfile(null);
+    }
+    setLoading(false);
+  };
 
-    return () => unsubscribe();
+  useEffect(() => {
+    let mounted = true;
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (mounted) void applySession(session);
+    }).catch((error) => {
+      console.error('Error restoring auth session:', error);
+      if (mounted) setLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (mounted) queueMicrotask(() => { void applySession(session); });
+    });
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signInWithGoogle = async () => {
     try {
       setLoading(true);
-      googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
-      const credential = await signInWithPopup(auth, googleAuthProvider);
-      const idToken = await credential.user.getIdToken();
-      setUser(credential.user);
-      setToken(idToken);
-      await fetchProfile(idToken);
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { queryParams: { access_type: 'offline', prompt: 'select_account' } },
+      });
+      if (error) throw error;
     } catch (err: any) {
       console.error('Google Sign-In failed:', err);
-      if (auth.currentUser) await firebaseSignOut(auth);
+      await supabase.auth.signOut();
       setUser(null);
       setToken(null);
       setProfile(null);
@@ -93,7 +100,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = async () => {
     try {
-      await firebaseSignOut(auth);
+      await supabase.auth.signOut();
       setProfile(null);
       setToken(null);
     } catch (e) {

@@ -84,10 +84,12 @@ npm run dev
 http://localhost:3000
 ```
 
-### Google Authentication setup
+### Supabase setup (Google OAuth and PostgreSQL)
 
-The app uses Firebase Authentication for real Google sign-in. Before using it outside its original Firebase project setup:
+1. Create a Supabase project and run the SQL files in `database/` in this order: `schema.sql`, `indexes.sql`, `functions.sql`, `triggers.sql`, `views.sql`, then `seed.sql`.
+2. In **Project Settings → API**, set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY` in `.env`. The anon/publishable key is used for Supabase Auth only; keep the service-role key private and out of this app.
+3. In **Authentication → Providers → Google**, enable Google and provide the OAuth client ID and client secret from Google Cloud Console. Add the Supabase callback URL shown in the provider settings to the Google OAuth client's authorized redirect URIs.
+4. In **Authentication → URL Configuration**, set the site URL and add `http://localhost:3000/**` plus your deployed app URL to the allowed redirect URLs.
+5. Set `DATABASE_URL` to the Supabase PostgreSQL connection URI from **Project Settings → Database → Connection string**. Use the session pooler URI if direct connections are unavailable on your network/deployment.
 
-1. In Firebase Console, open **Authentication → Sign-in method** and enable **Google**.
-2. In **Authentication → Settings → Authorized domains**, add `localhost` for local development and your deployed domain for production.
-3. Download a Firebase service-account key and set its one-line JSON in `FIREBASE_SERVICE_ACCOUNT_JSON` in `.env`. This is used only by Express to verify Firebase ID tokens; never commit it or expose it in browser code.
+Existing Google OAuth client ID and client secret are needed in the Supabase dashboard, not in this repository's `.env`. The local `.env` is intentionally ignored by Git; put the project URL, publishable/anon key, and database URI there locally. Do not send database passwords or OAuth client secrets in chat.
