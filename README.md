@@ -93,3 +93,40 @@ http://localhost:3000
 5. Set `DATABASE_URL` to the Supabase PostgreSQL connection URI from **Project Settings → Database → Connection string**. Use the session pooler URI if direct connections are unavailable on your network/deployment.
 
 Existing Google OAuth client ID and client secret are needed in the Supabase dashboard, not in this repository's `.env`. The local `.env` is intentionally ignored by Git; put the project URL, publishable/anon key, and database URI there locally. Do not send database passwords or OAuth client secrets in chat.
+
+### Deploy to Vercel
+
+The application deploys as a Vite SPA plus the catch-all Express function in
+`api/[...path].ts`. Commit that function and `vercel.json` along with the app
+changes; neither can remain only on a developer's machine.
+
+1. Import the GitHub repository into Vercel. The project supports Node 22–24 and runs
+   `npm ci` followed by `npm run build`.
+2. In **Project Settings → Environment Variables**, add the values from
+   `.env.example` to **Production** (and Preview when desired). `DATABASE_URL`,
+   `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `VITE_SUPABASE_URL`, and
+   `VITE_SUPABASE_ANON_KEY` are required for search, bookings, and sign-in.
+   Use Supabase's Transaction Pooler URI for `DATABASE_URL`; do not expose it
+   as a `VITE_*` variable.
+3. Set `GEMINI_API_KEY`, `RAILRADAR_API_KEY`, `OPENWEATHER_API_KEY`, and
+   `VITE_MAPTILER_API_KEY` only when those integrations are enabled. Server-only
+   values must never use the `VITE_` prefix.
+4. In Supabase **Authentication → URL Configuration**, set the production
+   domain as the Site URL and add it to Redirect URLs. Add Vercel preview URLs
+   too if previews need Google sign-in. Keep Supabase's Google callback URL in
+   the Google OAuth client's authorised redirect URIs.
+5. Run `schema.sql`, `indexes.sql`, `functions.sql`, `triggers.sql`,
+   `views.sql`, and `seed.sql` against the production Supabase database, in that
+   order, before the first deployment.
+
+After deployment, verify these paths on the production domain:
+
+```text
+/api/health
+/api/config
+/api/trains/search?from=Mumbai&to=Delhi&date=YYYY-MM-DD&travelClass=3A
+```
+
+`/api/health` must return `"status":"ok"` and `"database":"connected"`.
+The train-search URL should return train records. `/api/auth/me` intentionally returns
+`401` until the browser sends a signed-in user's Supabase bearer token.

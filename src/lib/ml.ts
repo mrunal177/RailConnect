@@ -24,8 +24,9 @@ export interface WaitlistPredictionResult {
 }
 
 export function predictWaitlistConfirmation(input: WaitlistFeatureInput): WaitlistPredictionResult {
-  const journey = new Date(input.journeyDate);
-  const today = new Date('2026-09-27');
+  const journey = new Date(`${input.journeyDate}T00:00:00.000Z`);
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
   const diffTime = Math.max(0, journey.getTime() - today.getTime());
   const leadTimeDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   const dayOfWeekNumber = journey.getDay();

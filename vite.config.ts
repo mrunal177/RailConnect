@@ -6,11 +6,6 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
-    // MapLibre ships a web worker that must be served as an asset rather than
-    // bundled by Vite's dependency optimizer during local development.
-    optimizeDeps: {
-      exclude: ['maplibre-gl'],
-    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

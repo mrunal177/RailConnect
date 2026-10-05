@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
-    "start": "node server.ts",
+    "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.12.0 <25"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

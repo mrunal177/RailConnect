@@ -41,6 +41,23 @@ import { TrainTrackingData } from './lib/tracking.ts';
 import { authenticatedFetch } from './lib/authenticated-fetch.ts';
 import trainDaylightPastel from './assets/images/train_daylight_pastel_1790515202398.jpg';
 
+const formatLocalDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getDefaultJourneyDate = () => {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return formatLocalDate(date);
+};
+
+// MapTiler browser keys are public by design and must be domain-restricted in
+// MapTiler. Vite substitutes this value only at build time.
+const maptilerApiKey = import.meta.env.VITE_MAPTILER_API_KEY || '';
+
 export default function App() {
   const {
     user,
@@ -63,7 +80,7 @@ export default function App() {
   // Search parameters
   const [searchFrom, setSearchFrom] = useState('Mumbai');
   const [searchTo, setSearchTo] = useState('Delhi');
-  const [searchDate, setSearchDate] = useState('2026-09-28');
+  const [searchDate, setSearchDate] = useState(getDefaultJourneyDate);
   const [travelClass, setTravelClass] = useState('3A');
   const [trainsList, setTrainsList] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -83,7 +100,6 @@ export default function App() {
   // Tracking state
   const [liveTrains, setLiveTrains] = useState<TrainTrackingData[]>([]);
   const [trackedTrain, setTrackedTrain] = useState<TrainTrackingData | null>(null);
-  const [maptilerApiKey, setMaptilerApiKey] = useState('');
 
   // Passenger bookings & complaints lists
   const [myBookings, setMyBookings] = useState<any[]>([]);
@@ -100,7 +116,7 @@ export default function App() {
   // Searching, train details, and live tracking are public. Anything that reads
   // private data or changes a reservation must start with authentication.
   const isAuthenticated = Boolean(user);
-  const signedInName = profile?.name || user?.displayName || user?.email || 'Google user';
+  const signedInName = profile?.name || user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email || 'Google user';
   const signedInRole = profile?.role || 'Authenticated passenger';
   const requireAuthentication = (action: string) => {
     if (isAuthenticated) return true;
@@ -185,7 +201,6 @@ export default function App() {
   useEffect(() => {
     executeSearch();
     fetchActiveTracking();
-    fetch('/api/config').then((res) => res.ok ? res.json() : null).then((config) => setMaptilerApiKey(config?.maptilerApiKey || '')).catch(() => undefined);
 
     // 10s auto-refresh for live train coordinates
     const interval = setInterval(() => {
@@ -503,6 +518,7 @@ export default function App() {
                   <input
                     type="date"
                     value={searchDate}
+                    min={formatLocalDate(new Date())}
                     onChange={(e) => setSearchDate(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2.5 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
                   />

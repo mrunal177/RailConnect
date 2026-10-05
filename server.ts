@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { pool } from './src/db/index.ts';
@@ -9,24 +9,112 @@ import { getRailRadarTracking } from './src/lib/railradar.ts';
 
 dotenv.config();
 
+// `gemini-3.5-flash-lite` is a currently supported text-generation model for
+// the installed @google/genai SDK. An explicit environment override remains
+// available for projects that need to select another supported model.
+const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const GEMINI_REQUEST_TIMEOUT_MS = 12_000;
+
+type GeminiFailureKind =
+  | 'missing_api_key'
+  | 'invalid_model'
+  | 'authentication'
+  | 'rate_limited'
+  | 'timeout'
+  | 'network'
+  | 'empty_response'
+  | 'unknown';
+
+const redactGeminiErrorMessage = (value: unknown) => {
+  const message = value instanceof Error ? value.message : String(value ?? 'Unknown Gemini error');
+  const configuredKey = process.env.GEMINI_API_KEY;
+  return message
+    .replaceAll(configuredKey || '', configuredKey ? '[redacted]' : '')
+    .replace(/([?&](?:key|api[_-]?key)=)[^&\s]+/gi, '$1[redacted]');
+};
+
+const describeGeminiFailure = (error: unknown): { kind: GeminiFailureKind; status?: number; message: string } => {
+  const details = error as { status?: unknown; code?: unknown; response?: { status?: unknown } };
+  const statusValue = details?.status ?? details?.response?.status ?? details?.code;
+  const status = typeof statusValue === 'number' ? statusValue : undefined;
+  const message = redactGeminiErrorMessage(error);
+  const normalized = message.toLowerCase();
+
+  if (status === 401 || status === 403 || /unauthenticated|permission denied|api key/.test(normalized)) {
+    return { kind: 'authentication', status, message };
+  }
+  if (status === 429 || /rate limit|resource exhausted|quota/.test(normalized)) {
+    return { kind: 'rate_limited', status, message };
+  }
+  if (status === 404 || /model.*(?:not found|unsupported)|not found.*model/.test(normalized)) {
+    return { kind: 'invalid_model', status, message };
+  }
+  if (/timeout|timed out|abort/.test(normalized)) {
+    return { kind: 'timeout', status, message };
+  }
+  if (/network|fetch failed|econn|enotfound|socket/.test(normalized)) {
+    return { kind: 'network', status, message };
+  }
+  return { kind: 'unknown', status, message };
+};
+
+const getDefaultJourneyDate = () => {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+};
+
+const isJourneyDate = (value: unknown): value is string => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value &&
+    value >= new Date().toISOString().slice(0, 10);
+};
+
 /**
  * Builds the API application without opening a network listener. Vercel invokes
  * this through api/[...path].ts; local development uses startServer below.
  */
 export async function createApp(serveFrontend = false) {
   const app = express();
+  const startedAt = Date.now();
 
-  app.use(express.json());
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(self)');
+    next();
+  });
+  app.use(express.json({ limit: '100kb' }));
 
   // ----------------------------------------------------
   // 1. HEALTH & ENVIRONMENT CONFIG API
   // ----------------------------------------------------
+  app.get('/api/health', async (_req, res) => {
+    try {
+      await pool.query('SELECT 1');
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        status: 'ok',
+        service: 'railconnect-api',
+        database: 'connected',
+        uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+      });
+    } catch (error) {
+      console.error('Health check failed:', error);
+      res.status(503).json({ status: 'unavailable', service: 'railconnect-api', database: 'disconnected' });
+    }
+  });
+
   app.get('/api/config', (_req, res) => {
     res.json({
       // RailRadar and weather credentials remain server-only.
       maptilerApiKey: process.env.VITE_MAPTILER_API_KEY || '',
       trackingMode: process.env.RAILRADAR_API_KEY ? 'live' : 'demo',
-      systemTime: '2026-09-27T06:01:07-07:00',
+      systemTime: new Date().toISOString(),
     });
   });
 
@@ -69,6 +157,11 @@ export async function createApp(serveFrontend = false) {
   app.get('/api/trains/search', async (req: Request, res: Response) => {
     try {
       const { from, to, date, travelClass } = req.query;
+      const journeyDate = date === undefined ? getDefaultJourneyDate() : date;
+      if (!isJourneyDate(journeyDate)) {
+        return res.status(400).json({ error: 'Journey date must be today or a future date in YYYY-MM-DD format' });
+      }
+
       let query = 'SELECT * FROM trains WHERE 1=1';
       const params: any[] = [];
 
@@ -80,18 +173,21 @@ export async function createApp(serveFrontend = false) {
         params.push(`%${to}%`);
         query += ` AND destination ILIKE $${params.length}`;
       }
+      if (travelClass) {
+        params.push(`,${String(travelClass).toUpperCase()},`);
+        query += ` AND POSITION($${params.length} IN ',' || UPPER(classes) || ',') > 0`;
+      }
 
       query += ' ORDER BY departure_time ASC';
       const result = await pool.query(query, params);
 
       // Enrich with real-time seat availability & waitlist stats
-      const journeyDateStr = (date as string) || '2026-09-28';
       const enrichedTrains = await Promise.all(
         result.rows.map(async (train: any) => {
           // Check how many seats booked for this date
           const bookedCountRes = await pool.query(
             'SELECT COUNT(*) as count FROM seats WHERE train_id = $1 AND journey_date = $2 AND is_booked = true',
-            [train.id, journeyDateStr]
+            [train.id, journeyDate]
           );
           const bookedSeats = parseInt(bookedCountRes.rows[0].count, 10);
           const availableSeats = Math.max(0, train.total_seats - bookedSeats);
@@ -102,12 +198,12 @@ export async function createApp(serveFrontend = false) {
           if (availableSeats === 0) {
             const wlRes = await pool.query(
               "SELECT COUNT(*) as count FROM bookings WHERE train_id = $1 AND journey_date = $2 AND booking_status = 'WAITLISTED'",
-              [train.id, journeyDateStr]
+              [train.id, journeyDate]
             );
             waitlistCount = parseInt(wlRes.rows[0].count, 10) + 1;
             confirmationPrediction = predictWaitlistConfirmation({
               trainNumber: train.train_number,
-              journeyDate: journeyDateStr,
+              journeyDate,
               travelClass: (travelClass as string) || '3A',
               currentWaitlist: waitlistCount,
               totalSeats: train.total_seats,
@@ -148,8 +244,16 @@ export async function createApp(serveFrontend = false) {
   app.get('/api/trains/:id/seats', async (req: Request, res: Response) => {
     try {
       const trainId = parseInt(req.params.id, 10);
-      const date = (req.query.date as string) || '2026-09-28';
+      const date = req.query.date === undefined ? getDefaultJourneyDate() : req.query.date;
+      if (!isJourneyDate(date)) {
+        return res.status(400).json({ error: 'Journey date must be today or a future date in YYYY-MM-DD format' });
+      }
       const travelClass = (req.query.travelClass as string) || '3A';
+
+      const trainRes = await pool.query('SELECT id FROM trains WHERE id = $1', [trainId]);
+      if (trainRes.rows.length === 0) {
+        return res.status(404).json({ error: 'Train not found' });
+      }
 
       // Query booked seats from database
       const bookedRes = await pool.query(
@@ -192,44 +296,81 @@ export async function createApp(serveFrontend = false) {
   // 4. ACID CONCURRENCY-PROTECTED BOOKING TRANSACTION
   // ----------------------------------------------------
   app.post('/api/bookings/reserve', requireAuth, async (req: AuthRequest, res: Response) => {
+    const body = req.body ?? {};
+    const {
+      trainId,
+      journeyDate,
+      passengerName,
+      passengerAge,
+      passengerGender,
+      seatNumber,
+      travelClass,
+      paymentMethod,
+    } = body;
+    const numericTrainId = Number(trainId);
+    const normalizedClass = typeof travelClass === 'string' ? travelClass.toUpperCase() : '3A';
+    const normalizedSeat = typeof seatNumber === 'string' ? seatNumber.trim().toUpperCase() : '';
+    const normalizedName = typeof passengerName === 'string' ? passengerName.trim() : '';
+    const age = passengerAge === undefined ? 28 : Number(passengerAge);
+    const normalizedGender = typeof passengerGender === 'string' ? passengerGender : 'Other';
+    const normalizedPaymentMethod = typeof paymentMethod === 'string' ? paymentMethod : 'UPI';
+
+    if (
+      !Number.isSafeInteger(numericTrainId) ||
+      numericTrainId < 1 ||
+      !isJourneyDate(journeyDate) ||
+      !normalizedName ||
+      normalizedName.length > 150 ||
+      !Number.isInteger(age) ||
+      age < 1 ||
+      age > 120 ||
+      !/^[A-Z]\d{1,2}$/.test(normalizedSeat) ||
+      !['1A', '2A', '3A', 'CC', 'SL'].includes(normalizedClass) ||
+      !['Male', 'Female', 'Other'].includes(normalizedGender) ||
+      !['UPI', 'CARD', 'NET_BANKING'].includes(normalizedPaymentMethod)
+    ) {
+      return res.status(400).json({ error: 'Booking details are invalid or incomplete' });
+    }
+
     const client = await pool.connect();
     try {
-      const {
-        trainId,
-        journeyDate,
-        passengerName,
-        passengerAge,
-        passengerGender,
-        seatNumber,
-        travelClass,
-        paymentMethod,
-      } = req.body;
-
-      if (!trainId || !journeyDate || !passengerName || !seatNumber) {
-        return res.status(400).json({ error: 'Missing required booking information' });
-      }
-
       // ACID TRANSACTION BEGIN
       await client.query('BEGIN');
 
       // 1. Verify train exists
-      const trainCheck = await client.query('SELECT * FROM trains WHERE id = $1 FOR SHARE', [trainId]);
+      const trainCheck = await client.query('SELECT * FROM trains WHERE id = $1 FOR SHARE', [numericTrainId]);
       if (trainCheck.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Specified train does not exist' });
       }
       const train = trainCheck.rows[0];
+      const supportedClasses = String(train.classes).toUpperCase().split(',');
+      if (!supportedClasses.includes(normalizedClass)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Train does not support travel class ${normalizedClass}` });
+      }
 
-      // 2. Concurrency Check: Check if seat is already booked or lock the seat row
+      // Insert the inventory row if it does not exist, then lock it before checking.
+      // The unique constraint serializes concurrent first-time reservations for this seat.
+      await client.query(
+        `INSERT INTO seats (train_id, journey_date, seat_number, travel_class, is_booked)
+         VALUES ($1, $2, $3, $4, false)
+         ON CONFLICT (train_id, journey_date, seat_number) DO NOTHING`,
+        [numericTrainId, journeyDate, normalizedSeat, normalizedClass]
+      );
       const seatCheck = await client.query(
         'SELECT * FROM seats WHERE train_id = $1 AND journey_date = $2 AND seat_number = $3 FOR UPDATE',
-        [trainId, journeyDate, seatNumber]
+        [numericTrainId, journeyDate, normalizedSeat]
       );
 
-      if (seatCheck.rows.length > 0 && seatCheck.rows[0].is_booked) {
+      if (
+        seatCheck.rows.length === 0 ||
+        seatCheck.rows[0].is_booked ||
+        seatCheck.rows[0].travel_class !== normalizedClass
+      ) {
         await client.query('ROLLBACK');
         return res.status(409).json({
-          error: `Seat ${seatNumber} is temporarily unavailable or just booked by another passenger. Please choose another seat.`,
+          error: `Seat ${normalizedSeat} is temporarily unavailable or just booked by another passenger. Please choose another seat.`,
         });
       }
 
@@ -239,11 +380,11 @@ export async function createApp(serveFrontend = false) {
 
       // 4. Determine fare
       let classMultiplier = 1.0;
-      if (travelClass === '1A') classMultiplier = 2.4;
-      if (travelClass === '2A') classMultiplier = 1.8;
-      if (travelClass === '3A') classMultiplier = 1.3;
-      if (travelClass === 'CC') classMultiplier = 1.1;
-      if (travelClass === 'SL') classMultiplier = 0.6;
+      if (normalizedClass === '1A') classMultiplier = 2.4;
+      if (normalizedClass === '2A') classMultiplier = 1.8;
+      if (normalizedClass === '3A') classMultiplier = 1.3;
+      if (normalizedClass === 'CC') classMultiplier = 1.1;
+      if (normalizedClass === 'SL') classMultiplier = 0.6;
       const calculatedFare = Math.round(parseFloat(train.base_fare) * classMultiplier);
 
       // 5. Create Booking record
@@ -258,30 +399,22 @@ export async function createApp(serveFrontend = false) {
           trainId,
           pnr,
           journeyDate,
-          passengerName,
-          passengerAge || 28,
-          passengerGender || 'Other',
-          seatNumber,
-          travelClass || '3A',
+          normalizedName,
+          age,
+          normalizedGender,
+          normalizedSeat,
+          normalizedClass,
           calculatedFare,
         ]
       );
       const booking = bookingInsert.rows[0];
 
-      // 6. Update or insert seat row
-      if (seatCheck.rows.length === 0) {
-        await client.query(
-          `INSERT INTO seats (train_id, journey_date, seat_number, travel_class, is_booked, booked_by_user_id, booking_id)
-           VALUES ($1, $2, $3, $4, true, $5, $6)`,
-          [trainId, journeyDate, seatNumber, travelClass || '3A', req.user?.dbUserId, booking.id]
-        );
-      } else {
-        await client.query(
-          `UPDATE seats SET is_booked = true, booked_by_user_id = $1, booking_id = $2, locked_at = CURRENT_TIMESTAMP
-           WHERE id = $3`,
-          [req.user?.dbUserId, booking.id, seatCheck.rows[0].id]
-        );
-      }
+      // 6. Mark the locked inventory row as booked
+      await client.query(
+        `UPDATE seats SET is_booked = true, booked_by_user_id = $1, booking_id = $2, locked_at = CURRENT_TIMESTAMP
+         WHERE id = $3`,
+        [req.user?.dbUserId, booking.id, seatCheck.rows[0].id]
+      );
 
       // 7. Process realistic payment transaction
       const txnRef = `TXN_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
@@ -290,7 +423,7 @@ export async function createApp(serveFrontend = false) {
           booking_id, amount, payment_method, payment_status, transaction_reference, payment_gateway
         ) VALUES ($1, $2, $3, 'SUCCESS', $4, 'SMART_RAIL_GATEWAY')
         RETURNING *`,
-        [booking.id, calculatedFare, paymentMethod || 'UPI', txnRef]
+        [booking.id, calculatedFare, normalizedPaymentMethod, txnRef]
       );
       const payment = paymentInsert.rows[0];
 
@@ -564,7 +697,7 @@ export async function createApp(serveFrontend = false) {
       const { trainNumber, journeyDate, travelClass, currentWaitlist, totalSeats } = req.body;
       const prediction = predictWaitlistConfirmation({
         trainNumber: trainNumber || '12951',
-        journeyDate: journeyDate || '2026-09-28',
+        journeyDate: journeyDate || getDefaultJourneyDate(),
         travelClass: travelClass || '3A',
         currentWaitlist: currentWaitlist || 12,
         totalSeats: totalSeats || 120,
@@ -602,33 +735,46 @@ export async function createApp(serveFrontend = false) {
         process.env.GEMINI_API_KEY &&
         process.env.GEMINI_API_KEY.trim() !== '' &&
         process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY';
+      const model = process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
+      let fallbackReason: GeminiFailureKind = 'missing_api_key';
 
       if (hasValidKey) {
         try {
           const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('AI generation timeout')), 3500)
-          );
-
-          const aiPromise = ai.models.generateContent({
-  // Current smallest stable model; 2.5 Flash-Lite is restricted for new projects.
-  model: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
-  contents: message,
-  config: {
-    systemInstruction: `You are SmartRail AI, an intelligent multilingual assistant for Indian Railways.
+          const response = await ai.models.generateContent({
+            model,
+            contents: message,
+            config: {
+              // @google/genai aborts this request at the SDK layer. This replaces
+              // the former detached 3.5s Promise.race timeout.
+              httpOptions: { timeout: GEMINI_REQUEST_TIMEOUT_MS },
+              systemInstruction: `You are SmartRail AI, an intelligent multilingual assistant for Indian Railways.
 You answer user questions about train timings, seat & sleeper berth availability, PNR confirmation rules, luggage limits, tatkal booking rules, platform details, ticket cancellations, and catering.
 CRITICAL INSTRUCTION: Always respond in the EXACT same language that the user asked in. If the user asks in Marathi (मराठी), answer in fluent Marathi. If in Hindi (हिन्दी), answer in fluent Hindi. If in English, answer in English. If in any other language, answer in that language.
 Keep responses concise, helpful, polite, and well-structured with bullet points where appropriate. Maximum 3 short paragraphs.`,
-  },
-});
+            },
+          });
 
-          const response = await Promise.race([aiPromise, timeoutPromise]);
-          if (response && response.text) {
-            return res.json({ reply: response.text });
+          if (response.text?.trim()) {
+            return res.json({ reply: response.text, provider: 'gemini' });
           }
+          fallbackReason = 'empty_response';
+          console.warn('[ai/chat] Gemini returned no text response', { model });
         } catch (aiErr: any) {
-          console.warn('Gemini API call, using instant local intelligence:', aiErr.message);
+          const failure = describeGeminiFailure(aiErr);
+          fallbackReason = failure.kind;
+          // Keep enough context in Vercel logs to diagnose configuration,
+          // model, auth, quota, network, and timeout failures without logging
+          // the API key or user prompt.
+          console.warn('[ai/chat] Gemini request failed', {
+            kind: failure.kind,
+            status: failure.status,
+            model,
+            message: failure.message,
+          });
         }
+      } else {
+        console.warn('[ai/chat] Gemini is not configured', { kind: fallbackReason, model });
       }
 
       // Intelligent local multilingual fallback
@@ -660,7 +806,7 @@ Keep responses concise, helpful, polite, and well-structured with bullet points 
           : `SmartRail AI: I can help you with train schedules, live seat & sleeper berth bookings, UPI QR payments, live GPS tracking, and grievance redressal. Feel free to ask questions by typing or speaking in English, Hindi, or Marathi!`;
       }
 
-      res.json({ reply });
+      res.json({ reply, provider: 'local-fallback', fallbackReason });
     } catch (err: any) {
       console.error('AI chat endpoint error:', err);
       res.status(500).json({ error: 'Failed to generate assistant response' });
@@ -861,6 +1007,14 @@ Keep responses concise, helpful, polite, and well-structured with bullet points 
     });
     app.use(vite.middlewares);
   }
+
+  app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
+    if (error instanceof SyntaxError && 'body' in error) {
+      return res.status(400).json({ error: 'Request body must be valid JSON' });
+    }
+    console.error('Unhandled API error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  });
 
   return app;
 }
