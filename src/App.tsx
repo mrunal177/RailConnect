@@ -27,6 +27,7 @@ import {
   Globe,
   X,
   Info,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { useAuth } from './context/AuthContext.tsx';
 import { useLanguage } from './context/LanguageContext.tsx';
@@ -41,6 +42,26 @@ import { VoiceAssistantChatbot } from './components/VoiceAssistantChatbot.tsx';
 import { TrainTrackingData } from './lib/tracking.ts';
 import { authenticatedFetch } from './lib/authenticated-fetch.ts';
 import trainDaylightPastel from './assets/images/train_daylight_pastel_1790515202398.jpg';
+
+const ALL_STATIONS = [
+  { value: 'Mumbai', label: 'Mumbai (MMCT / CSMT)', code: 'MMCT' },
+  { value: 'Delhi', label: 'Delhi (NDLS)', code: 'NDLS' },
+  { value: 'Pune', label: 'Pune (PUNE)', code: 'PUNE' },
+  { value: 'Ahmedabad', label: 'Ahmedabad (ADI)', code: 'ADI' },
+  { value: 'Bengaluru', label: 'Bengaluru (SBC)', code: 'SBC' },
+  { value: 'Chennai', label: 'Chennai (MAS)', code: 'MAS' },
+  { value: 'Jaipur', label: 'Jaipur (JP)', code: 'JP' },
+];
+
+const STATION_CODE_MAP: Record<string, string> = {
+  'Mumbai': 'MMCT',
+  'Delhi': 'NDLS',
+  'Pune': 'PUNE',
+  'Ahmedabad': 'ADI',
+  'Bengaluru': 'SBC',
+  'Chennai': 'MAS',
+  'Jaipur': 'JP',
+};
 
 const formatLocalDate = (date: Date) => {
   const year = date.getFullYear();
@@ -510,26 +531,11 @@ export default function App() {
         </div>
       </header>
 
-      {/* 2. SUB-BAR NOTIFICATION BANNER */}
-      <div className="bg-gradient-to-r from-sky-50 via-blue-50 to-indigo-50 px-4 py-2 border-b border-sky-100 text-xs text-slate-700 flex items-center justify-between">
-        <div className="max-w-7xl mx-auto w-full flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="font-semibold text-slate-900">System Status:</span>
-            <span>Cloud SQL PostgreSQL (ACID isolation) & Live Transit Simulators Active</span>
-          </div>
-          <div className="hidden md:flex items-center gap-4 text-xs font-mono text-slate-600">
-            <span>Date: 27 Sep 2026</span>
-            <span className="text-amber-800 font-semibold">Database Engine: PostgreSQL 16</span>
-          </div>
-        </div>
-      </div>
-
-      {/* 3. MAIN CONTENT ROUTER */}
+      {/* 2. MAIN CONTENT ROUTER */}
       {currentTab === 'SEARCH' ? (
         <div className="w-full flex flex-col">
           {/* Full-Screen Hero Block covering the viewport, revealing the approaching train completely in pastel daylight */}
-          <section className="relative w-full min-h-[calc(100vh-105px)] flex flex-col justify-between p-6 md:p-12 lg:p-16 overflow-hidden bg-slate-100 border-b border-slate-200 shadow-sm">
+          <section className="relative w-full min-h-[calc(100vh-68px)] flex flex-col justify-between p-6 md:p-12 lg:p-16 overflow-hidden bg-slate-100 border-b border-slate-200 shadow-sm">
             {/* Full-bleed train approaching daylight backdrop */}
             <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
               <img
@@ -571,28 +577,41 @@ export default function App() {
                     onChange={(e) => setSearchFrom(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2.5 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
                   >
-                    <option value="Mumbai">Mumbai (MMCT / CSMT)</option>
-                    <option value="Pune">Pune (PUNE)</option>
-                    <option value="Delhi">Delhi (NDLS)</option>
-                    <option value="Ahmedabad">Ahmedabad (ADI)</option>
-                    <option value="Bengaluru">Bengaluru (SBC)</option>
-                    <option value="Jaipur">Jaipur (JP)</option>
+                    {ALL_STATIONS.map((st) => (
+                      <option key={`from-${st.value}`} value={st.value}>
+                        {st.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">{t('toStation')}</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-slate-700">{t('toStation')}</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const temp = searchFrom;
+                        setSearchFrom(searchTo);
+                        setSearchTo(temp);
+                      }}
+                      title="Swap From and To stations"
+                      className="text-[10px] text-blue-600 hover:text-blue-800 flex items-center gap-1 font-semibold cursor-pointer"
+                    >
+                      <ArrowLeftRight className="w-3 h-3" />
+                      <span>Swap</span>
+                    </button>
+                  </div>
                   <select
                     value={searchTo}
                     onChange={(e) => setSearchTo(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2.5 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
                   >
-                    <option value="Delhi">Delhi (NDLS)</option>
-                    <option value="Mumbai">Mumbai (MMCT / CSMT)</option>
-                    <option value="Pune">Pune (PUNE)</option>
-                    <option value="Ahmedabad">Ahmedabad (ADI)</option>
-                    <option value="Chennai">Chennai (MAS)</option>
-                    <option value="Jaipur">Jaipur (JP)</option>
+                    {ALL_STATIONS.map((st) => (
+                      <option key={`to-${st.value}`} value={st.value}>
+                        {st.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -663,16 +682,28 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Left Column: Train list cards */}
               <div className="lg:col-span-2 space-y-4">
-                <div className="flex items-center justify-between pb-2">
-                  <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <span>Available Trains</span>
-                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
-                      {trainsList.length} Found
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                      <span>Available Trains</span>
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
+                        {trainsList.length} Found
+                      </span>
+                    </h3>
+                    <span className="text-slate-300 hidden sm:inline">|</span>
+                    <span className="text-xs text-slate-600 font-semibold">
+                      {searchFrom} ({STATION_CODE_MAP[searchFrom] || searchFrom}) ➔ {searchTo} ({STATION_CODE_MAP[searchTo] || searchTo})
                     </span>
-                  </h3>
-                  <span className="text-xs text-slate-500 font-mono">
-                    Route: {searchFrom} ➔ {searchTo}
-                  </span>
+                  </div>
+
+                  {/* RailRadar API Endpoint Indicator */}
+                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/90 border border-slate-200/80 text-[11px] text-slate-700 shadow-xs">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="font-semibold text-slate-500">API:</span>
+                    <code className="text-blue-700 font-mono text-[10px]">
+                      api.railradar.in/v1/trains/between/{STATION_CODE_MAP[searchFrom] || searchFrom}/{STATION_CODE_MAP[searchTo] || searchTo}
+                    </code>
+                  </div>
                 </div>
 
                 {trainsList.length === 0 ? (

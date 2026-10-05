@@ -48,7 +48,135 @@ export const STATIONS_DB: Record<string, StationLocation> = {
   'Bengaluru': { name: 'KSR Bengaluru', code: 'SBC', lat: 12.9781, lng: 77.5694 },
   'Chennai': { name: 'MGR Chennai Central', code: 'MAS', lat: 13.0827, lng: 80.2707 },
   'Jaipur': { name: 'Jaipur Junction', code: 'JP', lat: 26.9196, lng: 75.7878 },
+  'Agra': { name: 'Agra Cantt', code: 'AGC', lat: 27.1593, lng: 78.0063 },
+  'Gwalior': { name: 'Gwalior Junction', code: 'GWL', lat: 26.2183, lng: 78.1828 },
+  'Bhopal': { name: 'Bhopal Junction', code: 'BPL', lat: 23.2599, lng: 77.4126 },
+  'Nagpur': { name: 'Nagpur Junction', code: 'NGP', lat: 21.1458, lng: 79.0882 },
+  'Vijayawada': { name: 'Vijayawada Junction', code: 'BZA', lat: 16.5062, lng: 80.6480 },
+  'Katpadi': { name: 'Katpadi Junction', code: 'KPD', lat: 12.9790, lng: 79.1352 },
+  'Arakkonam': { name: 'Arakkonam Junction', code: 'AJJ', lat: 13.0788, lng: 79.6698 },
+  'Jolarpettai': { name: 'Jolarpettai Junction', code: 'JTJ', lat: 12.5732, lng: 78.5772 },
+  'Guntakal': { name: 'Guntakal Junction', code: 'GTL', lat: 15.1741, lng: 77.3752 },
+  'Renigunta': { name: 'Renigunta Junction', code: 'RU', lat: 13.6515, lng: 79.5165 },
+  'Ajmer': { name: 'Ajmer Junction', code: 'AII', lat: 26.4499, lng: 74.6399 },
+  'Abu Road': { name: 'Abu Road', code: 'ABR', lat: 24.4828, lng: 72.7816 },
+  'Rewari': { name: 'Rewari Junction', code: 'RE', lat: 28.1963, lng: 76.6212 },
+  'Alwar': { name: 'Alwar Junction', code: 'AWR', lat: 27.5530, lng: 76.6346 },
 };
+
+function getRouteStationsForPair(source: string, destination: string): StationLocation[] {
+  const s = source.toLowerCase();
+  const d = destination.toLowerCase();
+
+  // Bengaluru <-> Chennai
+  if ((s.includes('bengaluru') && d.includes('chennai')) || (s.includes('chennai') && d.includes('bengaluru'))) {
+    const list = [
+      STATIONS_DB['Bengaluru'],
+      STATIONS_DB['Jolarpettai'],
+      STATIONS_DB['Katpadi'],
+      STATIONS_DB['Arakkonam'],
+      STATIONS_DB['Chennai'],
+    ];
+    return s.includes('chennai') ? [...list].reverse() : list;
+  }
+
+  // Mumbai <-> Pune
+  if ((s.includes('mumbai') && d.includes('pune')) || (s.includes('pune') && d.includes('mumbai'))) {
+    const list = [
+      STATIONS_DB['Mumbai Central'],
+      STATIONS_DB['Kalyan'],
+      STATIONS_DB['Lonavala'],
+      STATIONS_DB['Pune'],
+    ];
+    return s.includes('pune') ? [...list].reverse() : list;
+  }
+
+  // Delhi <-> Chennai
+  if ((s.includes('delhi') && d.includes('chennai')) || (s.includes('chennai') && d.includes('delhi'))) {
+    const list = [
+      STATIONS_DB['Delhi'],
+      STATIONS_DB['Agra'],
+      STATIONS_DB['Gwalior'],
+      STATIONS_DB['Bhopal'],
+      STATIONS_DB['Nagpur'],
+      STATIONS_DB['Vijayawada'],
+      STATIONS_DB['Chennai'],
+    ];
+    return s.includes('chennai') ? [...list].reverse() : list;
+  }
+
+  // Delhi <-> Bengaluru
+  if ((s.includes('delhi') && d.includes('bengaluru')) || (s.includes('bengaluru') && d.includes('delhi'))) {
+    const list = [
+      STATIONS_DB['Delhi'],
+      STATIONS_DB['Agra'],
+      STATIONS_DB['Bhopal'],
+      STATIONS_DB['Nagpur'],
+      STATIONS_DB['Guntakal'],
+      STATIONS_DB['Bengaluru'],
+    ];
+    return s.includes('bengaluru') ? [...list].reverse() : list;
+  }
+
+  // Delhi <-> Jaipur
+  if ((s.includes('delhi') && d.includes('jaipur')) || (s.includes('jaipur') && d.includes('delhi'))) {
+    const list = [
+      STATIONS_DB['Delhi'],
+      STATIONS_DB['Rewari'],
+      STATIONS_DB['Alwar'],
+      STATIONS_DB['Jaipur'],
+    ];
+    return s.includes('jaipur') ? [...list].reverse() : list;
+  }
+
+  // Mumbai <-> Chennai
+  if ((s.includes('mumbai') && d.includes('chennai')) || (s.includes('chennai') && d.includes('mumbai'))) {
+    const list = [
+      STATIONS_DB['Mumbai Central'],
+      STATIONS_DB['Pune'],
+      STATIONS_DB['Solapur'],
+      STATIONS_DB['Guntakal'],
+      STATIONS_DB['Renigunta'],
+      STATIONS_DB['Chennai'],
+    ];
+    return s.includes('chennai') ? [...list].reverse() : list;
+  }
+
+  // Mumbai <-> Bengaluru
+  if ((s.includes('mumbai') && d.includes('bengaluru')) || (s.includes('bengaluru') && d.includes('mumbai'))) {
+    const list = [
+      STATIONS_DB['Mumbai Central'],
+      STATIONS_DB['Pune'],
+      STATIONS_DB['Solapur'],
+      STATIONS_DB['Guntakal'],
+      STATIONS_DB['Bengaluru'],
+    ];
+    return s.includes('bengaluru') ? [...list].reverse() : list;
+  }
+
+  // Ahmedabad <-> Jaipur
+  if ((s.includes('ahmedabad') && d.includes('jaipur')) || (s.includes('jaipur') && d.includes('ahmedabad'))) {
+    const list = [
+      STATIONS_DB['Ahmedabad'],
+      STATIONS_DB['Abu Road'],
+      STATIONS_DB['Ajmer'],
+      STATIONS_DB['Jaipur'],
+    ];
+    return s.includes('jaipur') ? [...list].reverse() : list;
+  }
+
+  // Default: Western corridor Mumbai - Surat - Vadodara - Ahmedabad / Delhi
+  const defaultList = [
+    STATIONS_DB['Mumbai Central'],
+    STATIONS_DB['Borivali'],
+    STATIONS_DB['Vapi'],
+    STATIONS_DB['Surat'],
+    STATIONS_DB['Bharuch'],
+    STATIONS_DB['Vadodara'],
+    STATIONS_DB['Ahmedabad'],
+  ];
+  return s.includes('delhi') || s.includes('ahmedabad') ? [...defaultList].reverse() : defaultList;
+}
 
 // Route interpolation for simulated movement
 export function getSimulatedTrainPosition(
@@ -59,16 +187,7 @@ export function getSimulatedTrainPosition(
   speed: number = 85,
   delay: number = 7
 ): TrainTrackingData {
-  // Key corridor: Mumbai - Surat - Vadodara - Ahmedabad / Delhi
-  const routeStations: StationLocation[] = [
-    STATIONS_DB['Mumbai Central'],
-    STATIONS_DB['Borivali'],
-    STATIONS_DB['Vapi'],
-    STATIONS_DB['Surat'],
-    STATIONS_DB['Bharuch'],
-    STATIONS_DB['Vadodara'],
-    STATIONS_DB['Ahmedabad'],
-  ];
+  const routeStations: StationLocation[] = getRouteStationsForPair(source, destination);
 
   // Dynamic calculation based on current time (modulo seconds for smooth cycle)
   const now = new Date();

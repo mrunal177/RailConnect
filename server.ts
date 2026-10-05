@@ -5,7 +5,7 @@ import { pool } from './src/db/index.ts';
 import { requireAuth, requireRole, type AuthRequest } from './src/middleware/auth.ts';
 import { predictWaitlistConfirmation, analyzeSentiment } from './src/lib/ml.ts';
 import { STATIONS_DB } from './src/lib/tracking.ts';
-import { getRailRadarTracking } from './src/lib/railradar.ts';
+import { getRailRadarTracking, getRailRadarTrainsBetween, STATION_CODE_MAP, type RailRadarBetweenResult } from './src/lib/railradar.ts';
 
 dotenv.config();
 
@@ -162,6 +162,57 @@ export async function createApp(serveFrontend = false) {
         return res.status(400).json({ error: 'Journey date must be today or a future date in YYYY-MM-DD format' });
       }
 
+      // Check RailRadar Trains Between API (https://api.railradar.in/v1/trains/between/{from}/{to})
+      const fromStr = String(from || '');
+      const toStr = String(to || '');
+      const fromCode = STATION_CODE_MAP[fromStr] || fromStr.toUpperCase();
+      const toCode = STATION_CODE_MAP[toStr] || toStr.toUpperCase();
+
+      let railRadarResult: RailRadarBetweenResult = {
+        success: false,
+        source: 'catalog',
+        apiEndpoint: `https://api.railradar.in/v1/trains/between/${encodeURIComponent(fromCode)}/${encodeURIComponent(toCode)}`,
+        fromCode,
+        toCode,
+        trains: [],
+      };
+
+      if (fromStr && toStr) {
+        railRadarResult = await getRailRadarTrainsBetween(fromStr, toStr, String(journeyDate));
+        if (railRadarResult.success && railRadarResult.trains.length > 0) {
+          // Sync any new live trains into the database catalog
+          for (const rTrain of railRadarResult.trains) {
+            try {
+              await pool.query(
+                `INSERT INTO trains (train_number, train_name, source, destination, departure_time, arrival_time, duration, total_seats, train_type, classes, base_fare, train_status, current_station, next_station, delay_minutes, speed_kmph)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                 ON CONFLICT (train_number) DO NOTHING`,
+                [
+                  rTrain.trainNumber,
+                  rTrain.trainName,
+                  rTrain.source,
+                  rTrain.destination,
+                  rTrain.departureTime,
+                  rTrain.arrivalTime,
+                  rTrain.duration,
+                  140,
+                  rTrain.trainType,
+                  rTrain.classes,
+                  rTrain.baseFare,
+                  rTrain.trainStatus,
+                  rTrain.currentStation,
+                  rTrain.nextStation,
+                  rTrain.delayMinutes,
+                  rTrain.speedKmph,
+                ]
+              );
+            } catch (syncErr) {
+              // Ignore duplicate or minor insertion errors
+            }
+          }
+        }
+      }
+
       let query = 'SELECT * FROM trains WHERE 1=1';
       const params: any[] = [];
 
@@ -215,6 +266,8 @@ export async function createApp(serveFrontend = false) {
             availableSeats,
             waitlistCount,
             confirmationPrediction,
+            apiEndpoint: railRadarResult.apiEndpoint,
+            apiSource: railRadarResult.source,
           };
         })
       );
@@ -223,6 +276,19 @@ export async function createApp(serveFrontend = false) {
     } catch (err: any) {
       console.error('Error searching trains:', err);
       res.status(500).json({ error: 'Failed to search trains' });
+    }
+  });
+
+  // Dedicated RailRadar Trains Between Stations API route
+  app.get('/api/railradar/between/:from/:to', async (req: Request, res: Response) => {
+    try {
+      const { from, to } = req.params;
+      const date = (req.query.date as string) || getDefaultJourneyDate();
+      const railRadarData = await getRailRadarTrainsBetween(from, to, date);
+      res.json(railRadarData);
+    } catch (err: any) {
+      console.error('Error fetching RailRadar trains between:', err);
+      res.status(500).json({ error: 'Failed to retrieve trains from RailRadar API' });
     }
   });
 
