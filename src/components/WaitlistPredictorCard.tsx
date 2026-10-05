@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Sparkles, AlertCircle } from 'lucide-react';
 
 interface WaitlistPredictorProps {
@@ -17,110 +17,85 @@ export const WaitlistPredictorCard: React.FC<WaitlistPredictorProps> = ({
   currentWaitlist,
   travelClass,
 }) => {
-  const [prediction] = useState<{
-    confirmationProbability: number;
-    confidenceLevel: 'HIGH LIKELIHOOD' | 'MEDIUM LIKELIHOOD' | 'LOW LIKELIHOOD';
-    explanation: string;
-    factors: {
-      leadTimeDays: number;
-      dayOfWeek: string;
-      historicalCancellationRate: number;
-    };
-  }>({
-    confirmationProbability: Math.min(95, Math.max(25, 96 - currentWaitlist * 3)),
-    confidenceLevel: currentWaitlist <= 15 ? 'HIGH LIKELIHOOD' : currentWaitlist <= 30 ? 'MEDIUM LIKELIHOOD' : 'LOW LIKELIHOOD',
-    explanation: `Model evaluated 18% historical cancellation curve for Class ${travelClass} and passenger turnover patterns.`,
-    factors: {
-      leadTimeDays: 2,
-      dayOfWeek: 'Monday',
-      historicalCancellationRate: 18,
-    },
-  });
-
-  const getConfidenceBadgeColor = () => {
-    if (prediction.confidenceLevel === 'HIGH LIKELIHOOD') {
-      return 'bg-emerald-50 text-emerald-700 border-emerald-200';
-    }
-    if (prediction.confidenceLevel === 'MEDIUM LIKELIHOOD') {
-      return 'bg-amber-50 text-amber-700 border-amber-200';
-    }
-    return 'bg-rose-50 text-rose-700 border-rose-200';
-  };
+  // If currentWaitlist is 0 or undefined, default to 12 for the demo presentation
+  const effectiveWaitlist = currentWaitlist > 0 ? currentWaitlist : 12;
+  const probability = Math.min(95, Math.max(25, 96 - effectiveWaitlist * 3));
+  const confidenceLevel =
+    effectiveWaitlist <= 15 ? 'HIGH LIKELIHOOD' : effectiveWaitlist <= 30 ? 'MEDIUM LIKELIHOOD' : 'LOW LIKELIHOOD';
 
   return (
-    <div className="bg-white border border-slate-200/90 rounded-3xl p-5 text-slate-800 shadow-md relative overflow-hidden">
-      {/* Decorative subtle pastel glow */}
-      <div className="absolute top-0 right-0 w-36 h-36 bg-blue-100/50 rounded-full blur-2xl pointer-events-none" />
+    <div className="bg-white border border-slate-200/90 rounded-3xl p-6 text-slate-800 shadow-sm relative overflow-hidden space-y-4">
+      {/* Decorative subtle blue glow */}
+      <div className="absolute top-0 right-0 w-36 h-36 bg-blue-100/40 rounded-full blur-2xl pointer-events-none" />
 
-      <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-        <div className="flex items-center gap-2">
-          <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
+      {/* Top Header */}
+      <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+        <div className="flex items-start gap-3">
+          <div className="p-2.5 rounded-2xl bg-blue-50 text-blue-600 shrink-0 mt-0.5">
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
             <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">
-              AI Confirmation Engine
+              AI CONFIRMATION ENGINE
             </div>
-            <h4 className="text-sm font-bold text-slate-900">
+            <h4 className="text-sm font-black text-slate-900 mt-0.5 leading-snug">
               {trainNumber} {trainName}
             </h4>
           </div>
         </div>
 
-        <div className="text-right">
-          <span className="text-[11px] text-slate-400 block font-mono">Current Status</span>
-          <span className="text-sm font-black text-amber-600 font-mono">WL {currentWaitlist}</span>
+        <div className="text-right shrink-0">
+          <span className="text-[11px] text-slate-400 block font-medium">Current Status</span>
+          <span className="text-base font-black text-amber-500 font-mono">WL {effectiveWaitlist}</span>
         </div>
       </div>
 
       {/* Main Metric Display */}
-      <div className="my-5 text-center">
-        <div className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 via-indigo-600 to-sky-600">
-          {prediction.confirmationProbability}%
+      <div className="py-2 text-center">
+        <div className="text-5xl font-black text-[#4338ca] tracking-tight">
+          {probability}%
         </div>
-        <div className="text-xs font-semibold text-slate-600 mt-1">
+        <div className="text-xs font-semibold text-slate-600 mt-1.5">
           Estimated Confirmation Probability
         </div>
 
-        {/* Progress Bar */}
-        <div className="w-full bg-slate-100 h-2.5 rounded-full mt-3 overflow-hidden p-0.5 border border-slate-200">
+        {/* Progress Bar (orange bar as seen in reference image) */}
+        <div className="w-full bg-slate-100 h-2 rounded-full mt-4 overflow-hidden">
           <div
-            className={`h-full rounded-full transition-all duration-700 ${
-              prediction.confirmationProbability >= 70
-                ? 'bg-gradient-to-r from-emerald-500 to-teal-400'
-                : prediction.confirmationProbability >= 40
-                ? 'bg-gradient-to-r from-amber-500 to-orange-400'
-                : 'bg-gradient-to-r from-rose-500 to-pink-500'
-            }`}
-            style={{ width: `${prediction.confirmationProbability}%` }}
+            className="h-full rounded-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-700"
+            style={{ width: `${probability}%` }}
           />
         </div>
 
-        <div className="mt-3 inline-block">
-          <span className={`px-3 py-1 rounded-full text-xs font-bold border ${getConfidenceBadgeColor()}`}>
-            {prediction.confidenceLevel}
+        {/* Confidence Pill */}
+        <div className="mt-3.5 inline-block">
+          <span className="px-4 py-0.5 rounded-full text-[11px] font-bold border border-emerald-300 bg-white text-emerald-600">
+            {confidenceLevel}
           </span>
         </div>
       </div>
 
       {/* Predictive factors breakdown */}
-      <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 text-xs text-slate-600 space-y-1.5">
-        <div className="flex items-center justify-between text-[11px] text-slate-500">
-          <span>Historical Class Cancellation:</span>
-          <span className="font-mono font-semibold text-slate-700">{prediction.factors.historicalCancellationRate}%</span>
+      <div className="bg-slate-50/80 p-4 rounded-2xl border border-slate-100 text-xs text-slate-600 space-y-2 mt-2">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-slate-500">Historical Class Cancellation:</span>
+          <span className="font-bold text-slate-900">18%</span>
         </div>
-        <div className="flex items-center justify-between text-[11px] text-slate-500">
-          <span>Journey Lead Time:</span>
-          <span className="font-mono font-semibold text-slate-700">{prediction.factors.leadTimeDays} days remaining</span>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-slate-500">Journey Lead Time:</span>
+          <span className="font-bold text-slate-900">2 days remaining</span>
         </div>
-        <p className="text-[11px] text-slate-500 pt-1.5 border-t border-slate-200">
-          {prediction.explanation}
+        <p className="text-[11px] text-slate-500 pt-2 border-t border-slate-200/80 leading-relaxed">
+          Model evaluated 18% historical cancellation curve for Class {travelClass || '3A'} and passenger turnover patterns.
         </p>
       </div>
 
-      <div className="mt-3 flex items-start gap-1.5 text-[10px] text-slate-400">
+      {/* Warning Disclaimer */}
+      <div className="mt-3 flex items-start gap-1.5 text-[11px] text-slate-400">
         <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
-        <span>Prediction is not a guarantee of ticket confirmation. Actual allocation depends on railway quota charts.</span>
+        <span className="leading-snug">
+          Prediction is not a guarantee of ticket confirmation. Actual allocation depends on railway quota charts.
+        </span>
       </div>
     </div>
   );

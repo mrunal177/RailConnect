@@ -328,6 +328,11 @@ export class InMemoryDatabase {
       return { rows: [], rowCount: 0 };
     }
 
+    // Health check
+    if (/^SELECT 1$/i.test(normalized) || /SELECT 1/i.test(normalized)) {
+      return { rows: [{ '?column?': 1 }], rowCount: 1 };
+    }
+
     // 1. generate_pnr()
     if (/SELECT generate_pnr\(\)/i.test(normalized)) {
       return { rows: [{ pnr: this.generatePnr() }], rowCount: 1 };
@@ -404,8 +409,8 @@ export class InMemoryDatabase {
       return { rows: result, rowCount: result.length };
     }
 
-    // 8. Train by ID (including FOR SHARE)
-    if (/SELECT \* FROM trains WHERE id = \$1/i.test(normalized)) {
+    // 8. Train by ID (including FOR SHARE, SELECT id, etc.)
+    if (/SELECT (?:id|\*|\w+.*) FROM trains WHERE id = \$1/i.test(normalized)) {
       const train = this.trains.find((t) => t.id === Number(params[0]));
       return { rows: train ? [train] : [], rowCount: train ? 1 : 0 };
     }
@@ -476,17 +481,24 @@ export class InMemoryDatabase {
 
     // 15. Seat Insert
     if (/INSERT INTO seats/i.test(normalized)) {
-      const [trainId, journeyDate, seatNumber, travelClass, userId, bookingId] = params;
+      const [trainId, journeyDate, seatNumber, travelClass, isBookedArg] = params;
+      const existing = this.seats.find(
+        (s) => s.train_id === Number(trainId) && s.journey_date === String(journeyDate) && s.seat_number === String(seatNumber)
+      );
+      if (existing) {
+        return { rows: [existing], rowCount: 1 };
+      }
+      const isBooked = isBookedArg === true;
       const newSeat: SeatRow = {
         id: this.nextSeatId++,
         train_id: Number(trainId),
         journey_date: String(journeyDate),
         seat_number: String(seatNumber),
         travel_class: String(travelClass || '3A'),
-        is_booked: true,
-        booked_by_user_id: userId ? Number(userId) : null,
-        booking_id: bookingId ? Number(bookingId) : null,
-        locked_at: new Date().toISOString(),
+        is_booked: isBooked,
+        booked_by_user_id: null,
+        booking_id: null,
+        locked_at: null,
       };
       this.seats.push(newSeat);
       return { rows: [newSeat], rowCount: 1 };

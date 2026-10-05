@@ -25,6 +25,8 @@ import {
   FileText,
   MessageSquare,
   Globe,
+  X,
+  Info,
 } from 'lucide-react';
 import { useAuth } from './context/AuthContext.tsx';
 import { useLanguage } from './context/LanguageContext.tsx';
@@ -35,7 +37,6 @@ import { WaitlistPredictorCard } from './components/WaitlistPredictorCard.tsx';
 import { FeedbackForm } from './components/FeedbackForm.tsx';
 import { ComplaintForm } from './components/ComplaintForm.tsx';
 import { DbmsLabModal } from './components/DbmsLabModal.tsx';
-import { CoachLayout } from './components/CoachLayout.tsx';
 import { VoiceAssistantChatbot } from './components/VoiceAssistantChatbot.tsx';
 import { TrainTrackingData } from './lib/tracking.ts';
 import { authenticatedFetch } from './lib/authenticated-fetch.ts';
@@ -46,6 +47,83 @@ const formatLocalDate = (date: Date) => {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const formatDisplayDate = (d: Date) => {
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dayName = days[d.getDay()];
+  const dayNum = String(d.getDate()).padStart(2, '0');
+  const monthName = months[d.getMonth()];
+  return `${dayName}, ${dayNum} ${monthName}`;
+};
+
+const calculateFare = (baseFare: string | number, tClass: string) => {
+  const base = parseFloat(String(baseFare || '300'));
+  let multiplier = 1.0;
+  if (tClass === '1A') multiplier = 2.4;
+  else if (tClass === '2A') multiplier = 1.8;
+  else if (tClass === '3A') multiplier = 1.3;
+  else if (tClass === '3E') multiplier = 1.2;
+  else if (tClass === 'CC') multiplier = 1.1;
+  else if (tClass === 'SL') multiplier = 0.6;
+  return Math.round(base * multiplier);
+};
+
+const ALL_CLASSES = [
+  { code: 'SL', label: 'Sleeper' },
+  { code: '3E', label: 'AC 3 Economy' },
+  { code: '3A', label: 'AC 3 Tier' },
+  { code: '2A', label: 'AC 2 Tier' },
+  { code: '1A', label: 'AC First Class' },
+];
+
+const getAvailabilityTiles = (baseDateStr: string, train: any) => {
+  const base = new Date(baseDateStr + 'T00:00:00');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const tiles = [];
+  for (let i = 0; i < 4; i++) {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i * 7);
+    const label = formatDisplayDate(d);
+    const dateStr = formatLocalDate(d);
+    const isPast = d < today;
+
+    let statusText = '';
+    let statusType: 'DEPARTED' | 'AVAILABLE' | 'WAITLIST' = 'AVAILABLE';
+
+    if (isPast) {
+      statusText = 'TRAIN DEPARTED';
+      statusType = 'DEPARTED';
+    } else if (i === 0) {
+      if (train.availableSeats > 0) {
+        statusText = `AVAILABLE ${train.availableSeats}`;
+        statusType = 'AVAILABLE';
+      } else {
+        statusText = `WL${train.waitlistCount || 12}`;
+        statusType = 'WAITLIST';
+      }
+    } else if (i === 1) {
+      statusText = 'WL68';
+      statusType = 'WAITLIST';
+    } else if (i === 2) {
+      statusText = 'WL23';
+      statusType = 'WAITLIST';
+    } else {
+      statusText = 'WL54';
+      statusType = 'WAITLIST';
+    }
+
+    tiles.push({
+      dateStr,
+      label,
+      statusText,
+      statusType,
+    });
+  }
+  return tiles;
 };
 
 const getDefaultJourneyDate = () => {
@@ -88,7 +166,8 @@ export default function App() {
   // Selected train & seat booking state
   const [selectedTrain, setSelectedTrain] = useState<any | null>(null);
   const [seatMap, setSeatMap] = useState<any | null>(null);
-  const [selectedSeat, setSelectedSeat] = useState<string | null>(null);
+  const [selectedSeat, setSelectedSeat] = useState<string | null>('A1');
+  const [scheduleTrain, setScheduleTrain] = useState<any | null>(null);
   const [passengerName, setPassengerName] = useState('Mrunal Baravkar');
   const [passengerAge, setPassengerAge] = useState(24);
   const [passengerGender, setPassengerGender] = useState('Male');
@@ -217,20 +296,24 @@ export default function App() {
     }
   }, [profile]);
 
-  const handleSelectTrain = async (train: any) => {
+  const handleSelectTrain = async (train: any, chosenClass?: string) => {
     setSelectedTrain(train);
-    setSelectedSeat(null);
+    const activeClass = chosenClass || travelClass;
+    if (chosenClass) setTravelClass(chosenClass);
     try {
-      const res = await fetch(`/api/trains/${train.id}/seats?date=${searchDate}&travelClass=${travelClass}`);
+      const res = await fetch(`/api/trains/${train.id}/seats?date=${searchDate}&travelClass=${activeClass}`);
       if (res.ok) {
         const data = await res.json();
         setSeatMap(data);
-        // Find first available seat
-        const avail = data.seats.find((s: any) => s.status === 'AVAILABLE');
-        if (avail) setSelectedSeat(avail.seatNumber);
+        // Find first available seat or default to A1
+        const avail = data.seats?.find((s: any) => s.status === 'AVAILABLE');
+        setSelectedSeat(avail?.seatNumber || 'A1');
+      } else {
+        setSelectedSeat('A1');
       }
     } catch (e) {
       console.error('Failed to load seat map:', e);
+      setSelectedSeat('A1');
     }
   };
 
@@ -603,37 +686,219 @@ export default function App() {
                 ) : (
                   trainsList.map((train) => {
                     const isSelected = selectedTrain?.id === train.id;
+
+                    if (isSelected) {
+                      const currentFare = calculateFare(train.base_fare, travelClass);
+                      const tiles = getAvailabilityTiles(searchDate, train);
+
+                      return (
+                        <div
+                          key={train.id}
+                          className="p-5 sm:p-6 rounded-3xl border border-slate-300 bg-white shadow-md ring-2 ring-blue-500/20 transition-all space-y-4"
+                        >
+                          {/* Row 1: Train title + Runs on + Train Schedule link */}
+                          <div className="flex flex-wrap items-center justify-between gap-3 pb-1 border-b border-slate-100">
+                            <div>
+                              <h4 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+                                {train.train_name.toUpperCase()} ({train.train_number})
+                              </h4>
+                            </div>
+
+                            <div className="flex items-center gap-4 text-xs">
+                              <div className="flex items-center gap-1.5 text-slate-600 font-medium">
+                                <span className="text-slate-500">Runs On:</span>
+                                {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, idx) => (
+                                  <span
+                                    key={idx}
+                                    className={`font-bold ${
+                                      idx === 0 ? 'text-slate-900' : 'text-slate-300'
+                                    }`}
+                                  >
+                                    {day}
+                                  </span>
+                                ))}
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => setScheduleTrain(train)}
+                                className="text-blue-600 hover:text-blue-800 font-bold hover:underline cursor-pointer transition-colors"
+                              >
+                                Train Schedule
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Row 2: Timing, Stations and Duration Strip */}
+                          <div className="flex items-center justify-between py-2 text-xs sm:text-sm">
+                            <div>
+                              <span className="text-lg font-black text-slate-900">{train.departure_time}</span>
+                              <span className="mx-2 text-slate-300 font-normal">|</span>
+                              <span className="font-bold text-slate-800 uppercase">{train.source} JN.</span>
+                              <span className="mx-2 text-slate-300 font-normal">|</span>
+                              <span className="text-slate-500 font-medium">{formatDisplayDate(new Date(searchDate + 'T00:00:00'))}</span>
+                            </div>
+
+                            <div className="flex items-center gap-2 text-slate-400">
+                              <div className="w-6 sm:w-10 h-[1px] bg-slate-300" />
+                              <span className="font-mono text-slate-600 font-bold text-xs">{train.duration}</span>
+                              <div className="w-6 sm:w-10 h-[1px] bg-slate-300" />
+                            </div>
+
+                            <div className="text-right">
+                              <span className="text-lg font-black text-slate-900">{train.arrival_time}</span>
+                              <span className="mx-2 text-slate-300 font-normal">|</span>
+                              <span className="font-bold text-slate-800 uppercase">{train.destination}</span>
+                              <span className="mx-2 text-slate-300 font-normal">|</span>
+                              <span className="text-slate-500 font-medium">{formatDisplayDate(new Date(searchDate + 'T00:00:00'))}</span>
+                            </div>
+                          </div>
+
+                          {/* Row 3: Class Selection Tabs */}
+                          <div className="flex items-center justify-between border-b border-slate-200 pt-2 overflow-x-auto">
+                            <div className="flex items-center gap-1 sm:gap-2">
+                              {ALL_CLASSES.map((cls) => {
+                                const isActive = travelClass === cls.code;
+                                return (
+                                  <button
+                                    key={cls.code}
+                                    type="button"
+                                    onClick={() => handleSelectTrain(train, cls.code)}
+                                    className={`pb-2.5 px-3 text-xs sm:text-sm font-bold transition-all relative whitespace-nowrap cursor-pointer ${
+                                      isActive
+                                        ? 'text-slate-900'
+                                        : 'text-slate-500 hover:text-slate-800'
+                                    }`}
+                                  >
+                                    <span>{cls.label} ({cls.code})</span>
+                                    {isActive && (
+                                      <span className="absolute bottom-0 left-0 right-0 h-[3px] bg-orange-500 rounded-t" />
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTrain(null)}
+                              className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors ml-2 mb-1 cursor-pointer"
+                              title="Close details"
+                            >
+                              <X className="w-4 h-4 font-black" />
+                            </button>
+                          </div>
+
+                          {/* Row 4: Availability Date Cards */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+                            {tiles.map((tile, idx) => {
+                              const isCurrent = tile.dateStr === searchDate;
+                              return (
+                                <div
+                                  key={idx}
+                                  onClick={() => setSearchDate(tile.dateStr)}
+                                  className={`p-3 rounded-2xl border transition-all cursor-pointer ${
+                                    isCurrent
+                                      ? 'bg-amber-50/50 border-amber-400 ring-2 ring-amber-300/40'
+                                      : 'bg-white border-slate-200 hover:border-slate-300 hover:shadow-xs'
+                                  }`}
+                                >
+                                  <div className="text-xs font-bold text-slate-900">{tile.label}</div>
+                                  <div
+                                    className={`text-xs font-black mt-1.5 ${
+                                      tile.statusType === 'DEPARTED'
+                                        ? 'text-slate-900 font-black'
+                                        : tile.statusType === 'AVAILABLE'
+                                        ? 'text-emerald-600 font-black'
+                                        : 'text-rose-600 font-black'
+                                    }`}
+                                  >
+                                    {tile.statusText}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Row 5: NTES Disclaimer */}
+                          <div className="text-xs text-slate-700 pt-1">
+                            Please check{' '}
+                            <a
+                              href="https://enquiry.indianrail.gov.in"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-bold text-blue-700 hover:underline"
+                            >
+                              NTES website
+                            </a>{' '}
+                            or{' '}
+                            <a
+                              href="https://enquiry.indianrail.gov.in"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-bold text-blue-700 hover:underline"
+                            >
+                              NTES app
+                            </a>{' '}
+                            for actual time before boarding
+                          </div>
+
+                          {/* Row 6: Book Now Button and Fare */}
+                          <div className="pt-2 flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (requireAuthentication('book tickets')) {
+                                  if (!selectedSeat) setSelectedSeat('A1');
+                                  setIsPaymentOpen(true);
+                                }
+                              }}
+                              className="px-6 py-2 rounded-lg bg-[#fb923c] hover:bg-[#f97316] text-white font-bold text-sm shadow-sm transition-all cursor-pointer"
+                            >
+                              Book Now
+                            </button>
+                            <div className="flex items-center gap-1.5 text-base font-black text-slate-900">
+                              <span>₹ {currentFare}</span>
+                              <button
+                                type="button"
+                                title="Fare Breakdown: Base Fare + Superfast & Reservation surcharges"
+                                className="text-slate-700 hover:text-slate-900 cursor-pointer"
+                              >
+                                <Info className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div
                         key={train.id}
                         onClick={() => handleSelectTrain(train)}
-                        className={`p-5 rounded-3xl border cursor-pointer transition-all ${
-                          isSelected
-                            ? 'bg-white border-blue-500 shadow-md ring-2 ring-blue-500/20'
-                            : 'bg-white border-slate-200 hover:border-slate-300 hover:shadow-sm'
-                        }`}
+                        className="p-5 rounded-3xl border border-slate-200 bg-white hover:border-blue-400 hover:shadow-sm cursor-pointer transition-all space-y-3"
                       >
-                        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
-                          <div>
-                            <span className="text-xs font-mono font-bold text-blue-700 mr-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-mono font-bold text-blue-700">
                               {train.train_number}
                             </span>
                             <span className="text-sm font-bold text-slate-900">{train.train_name}</span>
-                            <span className="ml-2 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 text-slate-600">
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 text-slate-600">
                               {train.train_type}
                             </span>
                           </div>
 
                           <div className="text-right">
-                            <span className="text-xs text-slate-400 block font-mono">Base Fare</span>
-                            <span className="text-base font-black text-amber-700">
-                              ₹ {train.base_fare}
+                            <span className="text-[11px] text-slate-400 block font-mono">Starts from</span>
+                            <span className="text-base font-black text-slate-900">
+                              ₹ {calculateFare(train.base_fare, travelClass)}
                             </span>
                           </div>
                         </div>
 
                         {/* Timing and Route Strip */}
-                        <div className="flex items-center justify-between py-4 text-xs">
+                        <div className="flex items-center justify-between py-2 text-xs">
                           <div>
                             <div className="text-base font-black text-slate-900">{train.departure_time}</div>
                             <div className="text-slate-500 font-semibold">{train.source}</div>
@@ -659,7 +924,7 @@ export default function App() {
                         </div>
 
                         {/* Availability Footer */}
-                        <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                        <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs">
                           <div>
                             {train.availableSeats > 0 ? (
                               <span className="text-emerald-700 font-bold flex items-center gap-1.5">
@@ -674,15 +939,9 @@ export default function App() {
                             )}
                           </div>
 
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleSelectTrain(train);
-                            }}
-                            className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-600 text-blue-700 hover:text-white text-xs font-bold transition-all"
-                          >
-                            Select & View Seats
-                          </button>
+                          <span className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-600 text-blue-700 hover:text-white text-xs font-bold transition-all">
+                            View Stats & Book
+                          </span>
                         </div>
                       </div>
                     );
@@ -690,31 +949,19 @@ export default function App() {
                 )}
               </div>
 
-              {/* Right Column: Interactive Seat Selector & AI Confirmation Predictor */}
+              {/* Right Column: Passenger Information & AI Confirmation Predictor */}
               <div className="space-y-6">
                 {selectedTrain ? (
                   <>
-                    {/* Interactive Coach Layout (Beds for Sleeper, Chairs for Chair Car) */}
-                    <CoachLayout
-                      travelClass={travelClass}
-                      seats={seatMap?.seats || []}
-                      selectedSeat={selectedSeat}
-                      onSelectSeat={(seat) => {
-                        if (requireAuthentication('select a seat for booking')) setSelectedSeat(seat);
-                      }}
-                      trainNumber={selectedTrain.train_number}
-                      coachName="B2"
-                    />
-
-                    {/* Passenger Details Form */}
-                    <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm space-y-3">
-                      <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider pb-2 border-b border-slate-100">
-                        {t('passengerDetails')}
-                      </h4>
+                    {/* Passenger Information Card (Matching Reference Screenshot 2) */}
+                    <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-sm space-y-4">
+                      <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 pb-3 border-b border-slate-100">
+                        PASSENGER INFORMATION
+                      </h3>
 
                       <div>
-                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                          {t('passengerFullName')}
+                        <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                          Passenger Full Name
                         </label>
                         <input
                           type="text"
@@ -723,28 +970,31 @@ export default function App() {
                             if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
                           }}
                           onChange={(e) => setPassengerName(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
+                          placeholder="Mrunal Baravkar"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-colors"
                         />
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                            {t('age')}
+                          <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                            Age
                           </label>
                           <input
                             type="number"
                             value={passengerAge}
+                            min={1}
+                            max={120}
                             onFocus={(e) => {
                               if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
                             }}
-                            onChange={(e) => setPassengerAge(parseInt(e.target.value, 10))}
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
+                            onChange={(e) => setPassengerAge(parseInt(e.target.value, 10) || 1)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-colors"
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                            {t('gender')}
+                          <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                            Gender
                           </label>
                           <select
                             value={passengerGender}
@@ -752,33 +1002,32 @@ export default function App() {
                               if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
                             }}
                             onChange={(e) => setPassengerGender(e.target.value)}
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-colors cursor-pointer"
                           >
-                            <option value="Male">{t('male')}</option>
-                            <option value="Female">{t('female')}</option>
-                            <option value="Other">{t('other')}</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                            <option value="Other">Other</option>
                           </select>
                         </div>
                       </div>
 
                       {/* Proceed to Payment CTA */}
                       <button
-                        disabled={!selectedSeat}
+                        type="button"
                         onClick={() => {
-                          if (requireAuthentication('proceed to payment')) setIsPaymentOpen(true);
+                          if (requireAuthentication('proceed to payment')) {
+                            if (!selectedSeat) setSelectedSeat('A1');
+                            setIsPaymentOpen(true);
+                          }
                         }}
-                        className="w-full mt-2 py-3.5 px-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 font-bold text-xs text-white flex items-center justify-center gap-2 shadow-md shadow-blue-600/20 transition-all disabled:opacity-40 cursor-pointer"
+                        className="w-full mt-2 py-3.5 px-4 rounded-2xl bg-[#3b49f3] hover:bg-[#2d3be3] font-bold text-xs text-white flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25 transition-all cursor-pointer"
                       >
                         <CreditCard className="w-4 h-4" />
-                        <span>
-                          {selectedSeat
-                            ? `${t('proceedToPayment')} (${t('berth')}/${t('seat')} ${selectedSeat})`
-                            : t('pickSeat')}
-                        </span>
+                        <span>Proceed to Payment (Berth/Seat {selectedSeat || 'A1'})</span>
                       </button>
                     </div>
 
-                    {/* AI Waitlist Prediction Card */}
+                    {/* AI Confirmation Engine Card (Matching Reference Screenshot 2) */}
                     <WaitlistPredictorCard
                       trainNumber={selectedTrain.train_number}
                       trainName={selectedTrain.train_name}
@@ -789,8 +1038,12 @@ export default function App() {
                     />
                   </>
                 ) : (
-                  <div className="p-8 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm">
-                    Select a train from the list to view interactive coach seats and ML prediction.
+                  <div className="p-8 text-center bg-white rounded-3xl border border-slate-200 text-slate-500 text-xs shadow-sm space-y-2">
+                    <Train className="w-8 h-8 text-blue-500 mx-auto mb-1" />
+                    <h4 className="font-bold text-slate-800 text-sm">Select a train to inspect</h4>
+                    <p className="text-slate-500 leading-relaxed">
+                      Click on any train card on the left to view detailed availability stats, passenger information, and AI waitlist predictions.
+                    </p>
                   </div>
                 )}
               </div>
@@ -1171,16 +1424,106 @@ export default function App() {
         </div>
       )}
 
-      {isPaymentOpen && selectedTrain && selectedSeat && (
+      {isPaymentOpen && selectedTrain && (
         <PaymentModal
-          amount={Math.round(parseFloat(selectedTrain.base_fare) * 1.3)}
+          amount={calculateFare(selectedTrain.base_fare, travelClass)}
           trainName={selectedTrain.train_name}
           trainNumber={selectedTrain.train_number}
-          seatNumber={selectedSeat}
+          seatNumber={selectedSeat || 'A1'}
           journeyDate={searchDate}
           onPaymentSuccess={handleCompleteBooking}
           onClose={() => setIsPaymentOpen(false)}
         />
+      )}
+
+      {/* TRAIN SCHEDULE MODAL */}
+      {scheduleTrain && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="relative w-full max-w-xl bg-white border border-slate-200 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600">
+                  Indian Railways Timetable
+                </span>
+                <h3 className="text-base font-black text-slate-900">
+                  {scheduleTrain.train_name} ({scheduleTrain.train_number})
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Route: {scheduleTrain.source} to {scheduleTrain.destination} • Speed: {scheduleTrain.speed_kmph || 110} km/h
+                </p>
+              </div>
+              <button
+                onClick={() => setScheduleTrain(null)}
+                className="text-slate-400 hover:text-slate-700 p-2 rounded-full hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto">
+              <table className="w-full text-xs text-left">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-400 font-bold uppercase text-[10px]">
+                    <th className="py-2">Station</th>
+                    <th className="py-2">Arr.</th>
+                    <th className="py-2">Dep.</th>
+                    <th className="py-2">Halt</th>
+                    <th className="py-2 text-right">Distance</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  <tr>
+                    <td className="py-2.5 font-bold text-slate-800">{scheduleTrain.source} JN (SRC)</td>
+                    <td className="py-2.5 text-slate-400">Source</td>
+                    <td className="py-2.5 font-mono font-bold text-slate-900">{scheduleTrain.departure_time}</td>
+                    <td className="py-2.5 text-slate-400">--</td>
+                    <td className="py-2.5 text-right font-mono text-slate-600">0 km</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 font-bold text-slate-800">
+                      {scheduleTrain.current_station || 'Intermediate Junction'}
+                    </td>
+                    <td className="py-2.5 font-mono text-slate-700">19:30</td>
+                    <td className="py-2.5 font-mono text-slate-700">19:35</td>
+                    <td className="py-2.5 text-slate-500">5 mins</td>
+                    <td className="py-2.5 text-right font-mono text-slate-600">260 km</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 font-bold text-slate-800">
+                      {scheduleTrain.next_station || 'Major Transit Junction'}
+                    </td>
+                    <td className="py-2.5 font-mono text-slate-700">21:15</td>
+                    <td className="py-2.5 font-mono text-slate-700">21:20</td>
+                    <td className="py-2.5 text-slate-500">5 mins</td>
+                    <td className="py-2.5 text-right font-mono text-slate-600">490 km</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 font-bold text-slate-800">{scheduleTrain.destination} (DST)</td>
+                    <td className="py-2.5 font-mono font-bold text-slate-900">{scheduleTrain.arrival_time}</td>
+                    <td className="py-2.5 text-slate-400">Dest.</td>
+                    <td className="py-2.5 text-slate-400">--</td>
+                    <td className="py-2.5 text-right font-mono text-slate-600">1384 km</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+              <span>Runs with Pantry Car & High-Speed LHB Coaches</span>
+              <button
+                type="button"
+                onClick={() => setScheduleTrain(null)}
+                className="px-4 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition-colors cursor-pointer"
+              >
+                Close Timetable
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {isDbmsLabOpen && <DbmsLabModal onClose={() => setIsDbmsLabOpen(false)} />}

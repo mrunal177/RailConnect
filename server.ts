@@ -1,9 +1,14 @@
-import express, { NextFunction, Request, Response } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { pool } from './src/db/index.ts';
 import { requireAuth, requireRole, AuthRequest } from './src/middleware/auth.ts';
-import { predictWaitlistConfirmation, analyzeSentiment } from './src/lib/ml.ts';
+import {
+  predictWaitlistConfirmation,
+  analyzeSentiment,
+  logisticRegressionModel,
+  generateSyntheticWaitlistData,
+} from './src/lib/ml.ts';
 import { STATIONS_DB } from './src/lib/tracking.ts';
 import { getRailRadarTracking } from './src/lib/railradar.ts';
 
@@ -690,8 +695,47 @@ export async function createApp(serveFrontend = false) {
   });
 
   // ----------------------------------------------------
-  // 8. ML PREDICTION ENDPOINTS
+  // 8. ML PREDICTION & TRAINING ENDPOINTS
   // ----------------------------------------------------
+  app.get('/api/ml/model-status', (_req: Request, res: Response) => {
+    res.json({
+      isTrained: logisticRegressionModel.isTrained,
+      trainingMetrics: logisticRegressionModel.trainingMetrics,
+      features: logisticRegressionModel.featureNames,
+    });
+  });
+
+  app.get('/api/ml/dataset/samples', (req: Request, res: Response) => {
+    try {
+      const limit = Math.min(50, Math.max(5, parseInt((req.query.limit as string) || '15', 10)));
+      const samples = generateSyntheticWaitlistData(limit);
+      res.json(samples);
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to generate synthetic data samples' });
+    }
+  });
+
+  app.post('/api/ml/train', (req: Request, res: Response) => {
+    try {
+      const { sampleCount = 2500, epochs = 120, learningRate = 0.08 } = req.body || {};
+      const count = Math.min(10000, Math.max(200, Number(sampleCount) || 2500));
+      const epochCount = Math.min(500, Math.max(20, Number(epochs) || 120));
+      const lr = Math.min(0.5, Math.max(0.001, Number(learningRate) || 0.08));
+
+      const syntheticData = generateSyntheticWaitlistData(count);
+      const metrics = logisticRegressionModel.train(syntheticData, epochCount, lr);
+
+      res.json({
+        success: true,
+        message: `Successfully trained Logistic Regression and Naive Bayes models on ${count} synthetic railway records over ${epochCount} epochs!`,
+        metrics,
+      });
+    } catch (err: any) {
+      console.error('Error training ML model:', err);
+      res.status(500).json({ error: 'Failed to train ML model: ' + err.message });
+    }
+  });
+
   app.post('/api/ml/waitlist-prediction', (req: Request, res: Response) => {
     try {
       const { trainNumber, journeyDate, travelClass, currentWaitlist, totalSeats } = req.body;
