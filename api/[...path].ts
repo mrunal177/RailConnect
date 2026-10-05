@@ -8,5 +8,12 @@ let appPromise: ReturnType<typeof createApp> | undefined;
 export default async function handler(req: Request, res: Response) {
   appPromise ??= createApp();
   const app = await appPromise;
-  return app(req, res);
+  return new Promise<void>((resolve, reject) => {
+    app(req, res, (err?: any) => {
+      if (err) return reject(err);
+      resolve();
+    });
+    res.on('finish', () => resolve());
+    res.on('close', () => resolve());
+  });
 }
