@@ -9,15 +9,16 @@ declare global {
 
 export const createPool = (): Pool => {
   if (!global._appDbPool) {
-    const connectionString = process.env.DATABASE_URL;
-
+    const connectionString = process.env.DATABASE_URL?.trim();
     if (!connectionString) {
       throw new Error('DATABASE_URL is not configured');
     }
 
     const pgPool = new Pool({
       connectionString,
-      max: 10,
+      // A warm Vercel function reuses this pool. One client per instance keeps
+      // short-lived serverless traffic within Supabase pooler limits.
+      max: Number(process.env.DB_POOL_MAX) || (process.env.VERCEL ? 1 : 10),
       connectionTimeoutMillis: 15000,
       ssl: {
         rejectUnauthorized: false,

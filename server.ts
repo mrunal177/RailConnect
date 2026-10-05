@@ -1,7 +1,4 @@
 import express, { Request, Response } from 'express';
-import { createServer as createViteServer } from 'vite';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { pool } from './src/db/index.ts';
@@ -12,12 +9,12 @@ import { getRailRadarTracking } from './src/lib/railradar.ts';
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-async function startServer() {
+/**
+ * Builds the API application without opening a network listener. Vercel invokes
+ * this through api/[...path].ts; local development uses startServer below.
+ */
+export async function createApp(serveFrontend = false) {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
@@ -614,15 +611,16 @@ async function startServer() {
           );
 
           const aiPromise = ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: message,
-            config: {
-              systemInstruction: `You are SmartRail AI, an intelligent multilingual assistant for Indian Railways.
+  // Current smallest stable model; 2.5 Flash-Lite is restricted for new projects.
+  model: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+  contents: message,
+  config: {
+    systemInstruction: `You are SmartRail AI, an intelligent multilingual assistant for Indian Railways.
 You answer user questions about train timings, seat & sleeper berth availability, PNR confirmation rules, luggage limits, tatkal booking rules, platform details, ticket cancellations, and catering.
 CRITICAL INSTRUCTION: Always respond in the EXACT same language that the user asked in. If the user asks in Marathi (मराठी), answer in fluent Marathi. If in Hindi (हिन्दी), answer in fluent Hindi. If in English, answer in English. If in any other language, answer in that language.
 Keep responses concise, helpful, polite, and well-structured with bullet points where appropriate. Maximum 3 short paragraphs.`,
-            },
-          });
+  },
+});
 
           const response = await Promise.race([aiPromise, timeoutPromise]);
           if (response && response.text) {
@@ -853,19 +851,34 @@ Keep responses concise, helpful, polite, and well-structured with bullet points 
     }
   });
 
-  // Mount Vite middlewares for React frontend
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'spa',
-  });
-  app.use(vite.middlewares);
+  if (serveFrontend) {
+    // Mount Vite only for local development. Vercel serves the built SPA and
+    // invokes the API as a serverless function instead.
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  }
+
+  return app;
+}
+
+async function startServer() {
+  const app = await createApp(true);
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚂 SMART RAILWAY Server running at http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer().catch((err) => {
-  console.error('Fatal server boot error:', err);
-  process.exit(1);
-});
+// Vercel imports createApp from its function entry point. Do not create a
+// listener in that runtime: Vercel owns the HTTP server lifecycle.
+if (process.env.VERCEL !== '1') {
+  startServer().catch((err) => {
+    console.error('Fatal server boot error:', err);
+    process.exit(1);
+  });
+}
