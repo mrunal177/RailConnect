@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Sparkles, AlertCircle } from 'lucide-react';
 
 interface WaitlistPredictorProps {
+  trainId: number;
   trainNumber: string;
   trainName: string;
   currentWaitlist: number;
@@ -11,17 +12,66 @@ interface WaitlistPredictorProps {
   onSelectAlternative?: (altTrain: any) => void;
 }
 
+interface WaitlistPrediction {
+  confirmation_probability: number;
+  prediction: string;
+}
+
 export const WaitlistPredictorCard: React.FC<WaitlistPredictorProps> = ({
+  trainId,
   trainNumber,
   trainName,
   currentWaitlist,
+  journeyDate,
   travelClass,
 }) => {
-  // If currentWaitlist is 0 or undefined, default to 12 for the demo presentation
-  const effectiveWaitlist = currentWaitlist > 0 ? currentWaitlist : 12;
-  const probability = Math.min(95, Math.max(25, 96 - effectiveWaitlist * 3));
-  const confidenceLevel =
-    effectiveWaitlist <= 15 ? 'HIGH LIKELIHOOD' : effectiveWaitlist <= 30 ? 'MEDIUM LIKELIHOOD' : 'LOW LIKELIHOOD';
+  const [prediction, setPrediction] = useState<WaitlistPrediction | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setPrediction(null);
+    setIsLoading(currentWaitlist > 0);
+
+    if (currentWaitlist <= 0) {
+      return () => controller.abort();
+    }
+
+    fetch('/api/ml/waitlist/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        train_id: trainId,
+        journey_date: journeyDate,
+        travel_class: travelClass,
+        current_waitlist: currentWaitlist,
+      }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Prediction request failed (${response.status})`);
+        const result = await response.json();
+        if (
+          typeof result.confirmation_probability !== 'number'
+          || !Number.isFinite(result.confirmation_probability)
+          || typeof result.prediction !== 'string'
+        ) {
+          throw new Error('Prediction response has an invalid format');
+        }
+        setPrediction(result);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        console.error('Waitlist prediction failed:', error);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [trainId, journeyDate, travelClass, currentWaitlist]);
+
+  const probability = prediction?.confirmation_probability;
 
   return (
     <div className="bg-white border border-slate-200/90 rounded-3xl p-6 text-slate-800 shadow-sm relative overflow-hidden space-y-4">
@@ -45,49 +95,47 @@ export const WaitlistPredictorCard: React.FC<WaitlistPredictorProps> = ({
         </div>
 
         <div className="text-right shrink-0">
-          <span className="text-[11px] text-slate-400 block font-medium">Current Status</span>
-          <span className="text-base font-black text-amber-500 font-mono">WL {effectiveWaitlist}</span>
+          <span className="text-[11px] text-slate-400 block font-medium">Waitlist Status</span>
+          <span className="text-base font-black text-amber-500 font-mono">
+            {currentWaitlist > 0 ? `WL ${currentWaitlist}` : 'No active waitlist'}
+          </span>
         </div>
       </div>
 
       {/* Main Metric Display */}
       <div className="py-2 text-center">
-        <div className="text-5xl font-black text-[#4338ca] tracking-tight">
-          {probability}%
+        <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">
+          Waitlist Confirmation
         </div>
-        <div className="text-xs font-semibold text-slate-600 mt-1.5">
-          Estimated Confirmation Probability
-        </div>
-
-        {/* Progress Bar (orange bar as seen in reference image) */}
-        <div className="w-full bg-slate-100 h-2 rounded-full mt-4 overflow-hidden">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-700"
-            style={{ width: `${probability}%` }}
-          />
-        </div>
-
-        {/* Confidence Pill */}
-        <div className="mt-3.5 inline-block">
-          <span className="px-4 py-0.5 rounded-full text-[11px] font-bold border border-emerald-300 bg-white text-emerald-600">
-            {confidenceLevel}
-          </span>
-        </div>
-      </div>
-
-      {/* Predictive factors breakdown */}
-      <div className="bg-slate-50/80 p-4 rounded-2xl border border-slate-100 text-xs text-slate-600 space-y-2 mt-2">
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-slate-500">Historical Class Cancellation:</span>
-          <span className="font-bold text-slate-900">18%</span>
-        </div>
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-slate-500">Journey Lead Time:</span>
-          <span className="font-bold text-slate-900">2 days remaining</span>
-        </div>
-        <p className="text-[11px] text-slate-500 pt-2 border-t border-slate-200/80 leading-relaxed">
-          Model evaluated 18% historical cancellation curve for Class {travelClass || '3A'} and passenger turnover patterns.
-        </p>
+        {currentWaitlist <= 0 ? (
+          <p className="mt-3 text-sm font-semibold text-slate-500" role="status">
+            No waitlist prediction is needed while seats are available.
+          </p>
+        ) : isLoading ? (
+          <p className="mt-3 text-sm font-semibold text-slate-500" role="status">Calculating confirmation probability…</p>
+        ) : prediction ? (
+          <>
+            <div className="mt-2 text-5xl font-black text-[#4338ca] tracking-tight">
+              {probability!.toFixed(2)}% chance of confirmation
+            </div>
+            <div className="mt-3 inline-block">
+              <span className="px-4 py-0.5 rounded-full text-[11px] font-bold border border-emerald-300 bg-white text-emerald-600">
+                {prediction.prediction}
+              </span>
+            </div>
+            <div className="w-full bg-slate-100 h-2 rounded-full mt-4 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-700"
+                style={{ width: `${Math.min(100, Math.max(0, probability!))}%` }}
+              />
+            </div>
+          </>
+        ) : (
+          <p className="mt-3 flex items-center justify-center gap-1.5 text-sm font-semibold text-slate-500" role="status">
+            <AlertCircle className="h-4 w-4 text-amber-500" />
+            Unable to calculate confirmation probability
+          </p>
+        )}
       </div>
 
       {/* Warning Disclaimer */}

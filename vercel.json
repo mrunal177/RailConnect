@@ -6,9 +6,16 @@
   "functions": {
     "api/[...path].ts": {
       "maxDuration": 15
+    },
+    "api/ml-waitlist-predict.py": {
+      "includeFiles": "ml/models/waitlist_model.pkl"
     }
   },
   "rewrites": [
+    {
+      "source": "/api/ml/waitlist/predict",
+      "destination": "/api/ml-waitlist-predict"
+    },
     {
       "source": "/api/:path*",
       "destination": "/api/[...path].ts"

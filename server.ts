@@ -5,7 +5,7 @@ import { pool } from './src/db/index.ts';
 import { requireAuth, requireRole, type AuthRequest } from './src/middleware/auth.ts';
 import { predictWaitlistConfirmation, analyzeSentiment } from './src/lib/ml.ts';
 import { STATIONS_DB } from './src/lib/tracking.ts';
-import { getRailRadarTracking, getRailRadarTrainsBetween, STATION_CODE_MAP, type RailRadarBetweenResult } from './src/lib/railradar.ts';
+import { getRailRadarTracking, getRailRadarTrainsBetween, STATION_CODE_MAP, STATION_NAME_MAP, type RailRadarBetweenResult } from './src/lib/railradar.ts';
 
 dotenv.config();
 
@@ -14,6 +14,85 @@ dotenv.config();
 // available for projects that need to select another supported model.
 const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const GEMINI_REQUEST_TIMEOUT_MS = 12_000;
+
+const CITY_COORDINATES: Record<string, [number, number]> = {
+  Mumbai: [19.076, 72.878],
+  Delhi: [28.614, 77.209],
+  Pune: [18.520, 73.856],
+  Ahmedabad: [23.023, 72.572],
+  Bengaluru: [12.972, 77.595],
+  Chennai: [13.083, 80.271],
+  Jaipur: [26.913, 75.787],
+};
+
+const normalizeStationName = (value: string) => {
+  const normalized = value.trim();
+  const cityName = Object.keys(STATION_CODE_MAP).find((name) => name.toLowerCase() === normalized.toLowerCase());
+  if (cityName) {
+    const cityCode = STATION_CODE_MAP[cityName];
+    return STATION_NAME_MAP[cityCode] || cityName;
+  }
+  const code = normalized.toUpperCase();
+  return STATION_NAME_MAP[code] || normalized;
+};
+
+const minutesToClock = (minutes: number) =>
+  `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+
+const haversineKm = (from: [number, number], to: [number, number]) => {
+  const radians = (degrees: number) => degrees * Math.PI / 180;
+  const [lat1, lon1] = from.map(radians);
+  const [lat2, lon2] = to.map(radians);
+  const latDelta = lat2 - lat1;
+  const lonDelta = lon2 - lon1;
+  const a = Math.sin(latDelta / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(lonDelta / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const buildFallbackTrain = (fromInput: string, toInput: string) => {
+  const source = normalizeStationName(fromInput);
+  const destination = normalizeStationName(toInput);
+  const pairKey = `${source}:${destination}`;
+  const hash = [...pairKey].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 7);
+  const trainNumber = `RC${hash.toString(36).toUpperCase().slice(-6)}`;
+  const straightLineDistance = CITY_COORDINATES[source] && CITY_COORDINATES[destination]
+    ? haversineKm(CITY_COORDINATES[source], CITY_COORDINATES[destination])
+    : 250;
+  const distanceKm = Math.max(80, Math.round(straightLineDistance * 1.25));
+  const speedKmph = 72 + (hash % 25);
+  const durationMinutes = Math.max(90, Math.ceil(distanceKm / speedKmph * 60));
+  const departureMinutes = 360 + (hash % 180);
+  const arrivalMinutes = departureMinutes + durationMinutes;
+  const departureTime = minutesToClock(departureMinutes);
+  const arrivalTime = minutesToClock(arrivalMinutes);
+  const duration = `${Math.floor(durationMinutes / 60)}h ${String(durationMinutes % 60).padStart(2, '0')}m`;
+  const classes = distanceKm < 350 ? 'CC,2S' : distanceKm < 700 ? '2A,3A,CC,SL' : '1A,2A,3A,SL';
+  const route = [
+    { station: source, arrival: null, departure: departureTime, distanceKm: 0 },
+    { station: destination, arrival: arrivalTime, departure: null, distanceKm },
+  ];
+
+  return {
+    trainNumber,
+    trainName: `RailConnect Indicative Service (${source} - ${destination})`,
+    source,
+    destination,
+    departureTime,
+    arrivalTime,
+    duration,
+    totalSeats: 120,
+    trainType: 'Indicative Demo',
+    classes,
+    baseFare: String(Math.round(180 + distanceKm * 0.72)),
+    trainStatus: 'ON_TIME',
+    currentStation: source,
+    nextStation: destination,
+    delayMinutes: 0,
+    speedKmph,
+    routeJson: JSON.stringify(route),
+  };
+};
 
 type GeminiFailureKind =
   | 'missing_api_key'
@@ -70,6 +149,69 @@ const isJourneyDate = (value: unknown): value is string => {
   return Number.isFinite(date.getTime()) &&
     date.toISOString().slice(0, 10) === value &&
     value >= new Date().toISOString().slice(0, 10);
+};
+
+const CLASS_CAPACITY_WEIGHTS: Record<string, number> = {
+  '1A': 1,
+  '2A': 1.5,
+  '3A': 2.5,
+  SL: 3,
+  CC: 2,
+  '2S': 2,
+};
+
+const CLASS_DEMAND_ADJUSTMENTS: Record<string, number> = {
+  '1A': -0.08,
+  '2A': -0.03,
+  '3A': 0.02,
+  SL: 0.1,
+  CC: 0,
+  '2S': 0.06,
+};
+
+const getDeterministicAvailabilityEstimate = (train: any, journeyDate: string, travelClass: string) => {
+  const offeredClasses = String(train.classes || travelClass)
+    .split(',')
+    .map((value: string) => value.trim().toUpperCase())
+    .filter(Boolean);
+  const classWeight = CLASS_CAPACITY_WEIGHTS[travelClass] ?? 1;
+  const totalClassWeight = offeredClasses.reduce(
+    (total: number, value: string) => total + (CLASS_CAPACITY_WEIGHTS[value] ?? 1),
+    0
+  );
+  const totalSeats = Math.max(1, Number(train.total_seats) || 120);
+  const capacity = Math.max(1, Math.round(totalSeats * classWeight / Math.max(1, totalClassWeight)));
+  const seed = `${train.train_number}|${travelClass}`;
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = Math.imul(hash ^ seed.charCodeAt(index), 16777619);
+  }
+
+  const seedValue = hash >>> 0;
+  const secondSeedValue = Math.imul(seedValue ^ 0x9e3779b9, 16777619) >>> 0;
+  const journeyDay = Date.parse(`${journeyDate}T00:00:00.000Z`) / 86_400_000;
+  const phase = seedValue / 0x100000000 * 2 * Math.PI;
+  const secondPhase = secondSeedValue / 0x100000000 * 2 * Math.PI;
+  const weeklyPhase = (journeyDay / 7) * 2 * Math.PI + phase;
+  const trainTypeDemand = /rajdhani|duronto|vande bharat/i.test(String(train.train_type || '')) ? 0.04 : 0;
+  const demandFraction = 0.65
+    + (seedValue / 0x100000000) * 0.3
+    + Math.sin((journeyDay / 43) * 2 * Math.PI + phase) * (0.08 + (secondSeedValue / 0x100000000) * 0.1)
+    + Math.sin((journeyDay / 109) * 2 * Math.PI + secondPhase) * 0.1
+    + Math.sin(weeklyPhase) * 0.02
+    + (CLASS_DEMAND_ADJUSTMENTS[travelClass] ?? 0)
+    + trainTypeDemand;
+  const estimatedBookings = Math.max(0, Math.round(capacity * demandFraction));
+  const excessDemand = Math.max(0, estimatedBookings - capacity);
+  const waitlistPosition = excessDemand > 0
+    ? Math.max(1, Math.ceil(excessDemand / Math.max(1, capacity * 0.025)))
+    : 0;
+
+  return {
+    capacity,
+    availableSeats: Math.max(0, capacity - estimatedBookings),
+    waitlistPosition,
+  };
 };
 
 /**
@@ -168,6 +310,10 @@ export async function createApp(serveFrontend = false) {
       const fromCode = STATION_CODE_MAP[fromStr] || fromStr.toUpperCase();
       const toCode = STATION_CODE_MAP[toStr] || toStr.toUpperCase();
 
+      if (fromCode && fromCode === toCode) {
+        return res.status(400).json({ error: 'Origin and destination must be different stations' });
+      }
+
       let railRadarResult: RailRadarBetweenResult = {
         success: false,
         source: 'catalog',
@@ -217,55 +363,124 @@ export async function createApp(serveFrontend = false) {
       const params: any[] = [];
 
       if (from) {
-        params.push(`%${from}%`);
+        params.push(`%${normalizeStationName(fromStr)}%`);
         query += ` AND source ILIKE $${params.length}`;
       }
       if (to) {
-        params.push(`%${to}%`);
+        params.push(`%${normalizeStationName(toStr)}%`);
         query += ` AND destination ILIKE $${params.length}`;
-      }
-      if (travelClass) {
-        params.push(`,${String(travelClass).toUpperCase()},`);
-        query += ` AND POSITION($${params.length} IN ',' || UPPER(classes) || ',') > 0`;
       }
 
       query += ' ORDER BY departure_time ASC';
-      const result = await pool.query(query, params);
+      let routeTrains = (await pool.query(query, params)).rows;
+
+      // Use saved schedules whenever possible. If the route has no local
+      // schedule either, persist a deterministic indicative service so search,
+      // timetable, seat map, and booking all use the same train record.
+      if (routeTrains.length === 0 && fromStr && toStr) {
+        const fallback = buildFallbackTrain(fromStr, toStr);
+        await pool.query(
+          `INSERT INTO trains (train_number, train_name, source, destination, departure_time, arrival_time, duration, total_seats, train_type, classes, base_fare, train_status, current_station, next_station, delay_minutes, speed_kmph, route_json)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+           ON CONFLICT (train_number) DO NOTHING`,
+          [
+            fallback.trainNumber,
+            fallback.trainName,
+            fallback.source,
+            fallback.destination,
+            fallback.departureTime,
+            fallback.arrivalTime,
+            fallback.duration,
+            fallback.totalSeats,
+            fallback.trainType,
+            fallback.classes,
+            fallback.baseFare,
+            fallback.trainStatus,
+            fallback.currentStation,
+            fallback.nextStation,
+            fallback.delayMinutes,
+            fallback.speedKmph,
+            fallback.routeJson,
+          ]
+        );
+        routeTrains = (await pool.query(query, params)).rows;
+      }
+
+      const requestedClass = String(travelClass || '').toUpperCase();
+      const filteredTrains = requestedClass
+        ? routeTrains.filter((train: any) =>
+            String(train.classes || '').split(',').some((trainClass: string) => trainClass.trim().toUpperCase() === requestedClass)
+          )
+        : routeTrains;
 
       // Enrich with real-time seat availability & waitlist stats
       const enrichedTrains = await Promise.all(
-        result.rows.map(async (train: any) => {
-          // Check how many seats booked for this date
-          const bookedCountRes = await pool.query(
-            'SELECT COUNT(*) as count FROM seats WHERE train_id = $1 AND journey_date = $2 AND is_booked = true',
-            [train.id, journeyDate]
+        filteredTrains.map(async (train: any) => {
+          // Count recorded bookings in the selected class before estimating any
+          // display-only availability for a class/date with no inventory data.
+          const deterministicEstimate = getDeterministicAvailabilityEstimate(
+            train,
+            String(journeyDate),
+            requestedClass || '3A'
           );
-          const bookedSeats = parseInt(bookedCountRes.rows[0].count, 10);
-          const availableSeats = Math.max(0, train.total_seats - bookedSeats);
-          
-          let waitlistCount = 0;
-          let confirmationPrediction = null;
-
-          if (availableSeats === 0) {
-            const wlRes = await pool.query(
-              "SELECT COUNT(*) as count FROM bookings WHERE train_id = $1 AND journey_date = $2 AND booking_status = 'WAITLISTED'",
-              [train.id, journeyDate]
-            );
-            waitlistCount = parseInt(wlRes.rows[0].count, 10) + 1;
-            confirmationPrediction = predictWaitlistConfirmation({
-              trainNumber: train.train_number,
-              journeyDate,
-              travelClass: (travelClass as string) || '3A',
-              currentWaitlist: waitlistCount,
-              totalSeats: train.total_seats,
-            });
-          }
+          const bookedCountRes = await pool.query(
+            `SELECT COUNT(*) as count
+             FROM seats
+             WHERE train_id = $1
+               AND journey_date = $2
+               AND is_booked = true
+               AND ($3::text IS NULL OR travel_class = $3)`,
+            [train.id, journeyDate, requestedClass || null]
+          );
+          const confirmedCountRes = await pool.query(
+            `SELECT COUNT(*) as count
+             FROM bookings
+             WHERE train_id = $1
+               AND journey_date = $2
+               AND booking_status = 'CONFIRMED'
+               AND ($3::text IS NULL OR travel_class = $3)`,
+            [train.id, journeyDate, requestedClass || null]
+          );
+          const bookedSeats = Math.max(
+            parseInt(bookedCountRes.rows[0].count, 10),
+            parseInt(confirmedCountRes.rows[0].count, 10)
+          );
+          const wlRes = await pool.query(
+            `SELECT COUNT(*) as count, COALESCE(MAX(waitlist_position), 0) as max_position
+             FROM bookings
+             WHERE train_id = $1
+               AND journey_date = $2
+               AND booking_status = 'WAITLISTED'
+               AND ($3::text IS NULL OR travel_class = $3)`,
+            [train.id, journeyDate, requestedClass || null]
+          );
+          const recordedWaitlistCount = parseInt(wlRes.rows[0].count, 10);
+          const recordedWaitlistPosition = Math.max(
+            recordedWaitlistCount,
+            parseInt(wlRes.rows[0].max_position, 10)
+          ) + 1;
+          const hasRecordedAvailability = bookedSeats > 0 || recordedWaitlistCount > 0;
+          const availability = hasRecordedAvailability
+            ? {
+                capacity: deterministicEstimate.capacity,
+                availableSeats: Math.max(0, deterministicEstimate.capacity - bookedSeats),
+                waitlistPosition: 0,
+              }
+            : deterministicEstimate;
+          const availableSeats = recordedWaitlistCount > 0
+            ? 0
+            : availability.availableSeats;
+          const waitlistCount = availableSeats > 0
+            ? 0
+            : recordedWaitlistCount > 0
+              ? recordedWaitlistPosition
+              : availability.waitlistPosition || 1;
 
           return {
             ...train,
             availableSeats,
             waitlistCount,
-            confirmationPrediction,
+            confirmationPrediction: null,
             apiEndpoint: railRadarResult.apiEndpoint,
             apiSource: railRadarResult.source,
           };
@@ -322,9 +537,14 @@ export async function createApp(serveFrontend = false) {
       }
 
       // Query booked seats from database
+      const requestedClass = typeof travelClass === 'string' ? travelClass.toUpperCase() : '';
       const bookedRes = await pool.query(
-        'SELECT seat_number, is_booked FROM seats WHERE train_id = $1 AND journey_date = $2',
-        [trainId, date]
+        `SELECT seat_number, is_booked
+         FROM seats
+         WHERE train_id = $1
+           AND journey_date = $2
+           AND ($3::text IS NULL OR travel_class = $3)`,
+        [trainId, date, requestedClass || null]
       );
       const bookedMap = new Map<string, boolean>();
       bookedRes.rows.forEach((r: any) => bookedMap.set(r.seat_number, r.is_booked));
@@ -758,6 +978,27 @@ export async function createApp(serveFrontend = false) {
   // ----------------------------------------------------
   // 8. ML PREDICTION ENDPOINTS
   // ----------------------------------------------------
+  app.post('/api/ml/waitlist/predict', async (req: Request, res: Response) => {
+    try {
+      const predictionResponse = await fetch(
+        process.env.WAITLIST_PREDICTION_API_URL || 'http://127.0.0.1:8001/',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(req.body),
+          signal: AbortSignal.timeout(12_000),
+        }
+      );
+      res
+        .status(predictionResponse.status)
+        .type(predictionResponse.headers.get('content-type') || 'application/json')
+        .send(await predictionResponse.text());
+    } catch (err) {
+      console.error('Trained waitlist prediction service unavailable:', err);
+      res.status(503).json({ detail: 'Waitlist prediction service is unavailable' });
+    }
+  });
+
   app.post('/api/ml/waitlist-prediction', (req: Request, res: Response) => {
     try {
       const { trainNumber, journeyDate, travelClass, currentWaitlist, totalSeats } = req.body;

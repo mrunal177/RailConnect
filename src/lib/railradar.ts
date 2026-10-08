@@ -108,7 +108,9 @@ export async function getRailRadarTrainsBetween(
   }
 
   try {
-    const url = date ? `${endpoint}?date=${encodeURIComponent(date)}` : endpoint;
+    const query = new URLSearchParams({ byCity: 'true' });
+    if (date) query.set('date', date);
+    const url = `${endpoint}?${query}`;
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -132,32 +134,37 @@ export async function getRailRadarTrainsBetween(
     }
 
     const json: any = await response.json();
-    const rawList = Array.isArray(json?.data)
+    const responseData = json?.data;
+    const rawList = Array.isArray(responseData)
       ? json.data
-      : Array.isArray(json?.data?.trains)
-      ? json.data.trains
+      : Array.isArray(responseData?.trains)
+      ? responseData.trains
       : Array.isArray(json?.trains)
       ? json.trains
       : [];
 
     const trains: RailRadarBetweenTrain[] = rawList.map((t: any) => {
-      const trainNumber = String(t.trainNumber || t.train_number || t.number || '').trim();
-      const trainName = String(t.trainName || t.train_name || t.name || `Train ${trainNumber}`).trim();
-      const dep = String(t.departureTime || t.departure_time || t.std || t.dep || '08:00').slice(0, 5);
-      const arr = String(t.arrivalTime || t.arrival_time || t.sta || t.arr || '18:00').slice(0, 5);
-      const duration = String(t.duration || t.travelTime || '10h 00m');
+      const trainInfo = t.train || t;
+      const trainNumber = String(trainInfo.number || t.trainNumber || t.train_number || '').trim();
+      const trainName = String(trainInfo.name || t.trainName || t.train_name || `Train ${trainNumber}`).trim();
+      const dep = String(t.from?.departure || t.departureTime || t.departure_time || t.std || t.dep || '08:00').slice(0, 5);
+      const arr = String(t.to?.arrival || t.arrivalTime || t.arrival_time || t.sta || t.arr || '18:00').slice(0, 5);
+      const durationValue = t.duration ?? t.travelTime;
+      const duration = typeof durationValue === 'number'
+        ? `${Math.floor(durationValue / 60)}h ${String(durationValue % 60).padStart(2, '0')}m`
+        : String(durationValue || '10h 00m');
       const classesRaw = t.classes || t.availableClasses || t.classType || '1A,2A,3A,SL';
       const classes = Array.isArray(classesRaw) ? classesRaw.join(',') : String(classesRaw);
       const baseFare = String(t.baseFare || t.fare || '950.00');
-      const trainType = String(t.trainType || t.train_type || t.type || 'Superfast');
+      const trainType = String(trainInfo.type || t.trainType || t.train_type || t.type || 'Superfast');
       const speedKmph = Number(t.speedKmph || t.speed || 95);
-      const delayMinutes = Number(t.delayMinutes || t.delay || 0);
+      const delayMinutes = Number(t.live?.delayMinutes ?? t.delayMinutes ?? t.delay ?? 0);
 
       return {
         trainNumber,
         trainName,
-        source: STATION_NAME_MAP[fromCode] || fromClean,
-        destination: STATION_NAME_MAP[toCode] || toClean,
+        source: responseData?.from?.name || STATION_NAME_MAP[fromCode] || fromClean,
+        destination: responseData?.to?.name || STATION_NAME_MAP[toCode] || toClean,
         departureTime: dep,
         arrivalTime: arr,
         duration,
@@ -167,8 +174,8 @@ export async function getRailRadarTrainsBetween(
         speedKmph,
         delayMinutes,
         trainStatus: delayMinutes > 15 ? 'DELAYED' : 'ON_TIME',
-        currentStation: t.currentStation || fromClean,
-        nextStation: t.nextStation || toClean,
+        currentStation: t.currentStation || responseData?.from?.name || fromClean,
+        nextStation: t.nextStation || responseData?.to?.name || toClean,
       };
     }).filter((t: RailRadarBetweenTrain) => t.trainNumber.length > 0);
 

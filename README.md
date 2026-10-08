@@ -77,12 +77,22 @@ Interactive satellite/vector map featuring:
 # 1. Install dependencies
 npm install
 
-# 2. Configure environment variables in .env (or run in AI Studio)
+# 2. Install the trained waitlist API dependencies with Python 3.12
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+# 3. Configure environment variables in .env (or run in AI Studio)
 npm run dev
 
-# 3. Access web application
+# 4. Access web application
 http://localhost:3000
 ```
+
+Local development starts both the Express application and the trained waitlist
+prediction API. Waitlist probabilities require `DATABASE_URL` and recorded
+booking history for the selected train and class; when that train has no class
+history, the predictor uses recorded history for the same class on other trains.
+If there is no history for that class, it reports that a prediction is unavailable.
 
 ### Supabase setup (Google OAuth and PostgreSQL)
 

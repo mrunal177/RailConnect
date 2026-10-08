@@ -591,7 +591,7 @@ export class InMemoryDatabase {
           next_station: String(params[13] || params[3] || ''),
           delay_minutes: Number(params[14]) || 0,
           speed_kmph: Number(params[15]) || 90,
-          route_json: '[]',
+          route_json: String(params[16] || '[]'),
           created_at: new Date().toISOString(),
         };
         this.trains.push(train);
@@ -611,27 +611,61 @@ export class InMemoryDatabase {
     }
 
     // 10. Count Booked Seats for Train & Date
-    if (/SELECT COUNT\(\*\) as count FROM seats WHERE train_id = \$1 AND journey_date = \$2 AND is_booked = true/i.test(normalized)) {
+    if (/SELECT COUNT\(\*\) as count FROM seats WHERE train_id = \$1 AND journey_date = \$2 AND is_booked = true AND \(\$3::text IS NULL OR travel_class = \$3\)/i.test(normalized)) {
       const trainId = Number(params[0]);
       const date = String(params[1]);
-      const count = this.seats.filter((s) => s.train_id === trainId && s.journey_date === date && s.is_booked).length;
+      const travelClass = params[2] ? String(params[2]) : null;
+      const count = this.seats.filter((s) =>
+        s.train_id === trainId
+        && s.journey_date === date
+        && s.is_booked
+        && (!travelClass || s.travel_class === travelClass)
+      ).length;
+      return { rows: [{ count: count.toString() }], rowCount: 1 };
+    }
+
+    if (/SELECT COUNT\(\*\) as count FROM bookings WHERE train_id = \$1 AND journey_date = \$2 AND booking_status = 'CONFIRMED' AND \(\$3::text IS NULL OR travel_class = \$3\)/i.test(normalized)) {
+      const trainId = Number(params[0]);
+      const date = String(params[1]);
+      const travelClass = params[2] ? String(params[2]).toUpperCase() : null;
+      const count = this.bookings.filter((booking) =>
+        booking.train_id === trainId
+        && booking.journey_date === date
+        && booking.booking_status === 'CONFIRMED'
+        && (!travelClass || booking.travel_class.toUpperCase() === travelClass)
+      ).length;
       return { rows: [{ count: count.toString() }], rowCount: 1 };
     }
 
     // 11. Count Waitlisted Bookings for Train & Date
-    if (/SELECT COUNT\(\*\) as count FROM bookings WHERE train_id = \$1 AND journey_date = \$2 AND booking_status = 'WAITLISTED'/i.test(normalized)) {
+    if (/SELECT COUNT\(\*\) as count, COALESCE\(MAX\(waitlist_position\), 0\) as max_position FROM bookings WHERE train_id = \$1 AND journey_date = \$2 AND booking_status = 'WAITLISTED' AND \(\$3::text IS NULL OR travel_class = \$3\)/i.test(normalized)) {
       const trainId = Number(params[0]);
       const date = String(params[1]);
-      const count = this.bookings.filter((b) => b.train_id === trainId && b.journey_date === date && b.booking_status === 'WAITLISTED').length;
-      return { rows: [{ count: count.toString() }], rowCount: 1 };
+      const travelClass = params[2] ? String(params[2]) : null;
+      const waitlistedBookings = this.bookings.filter((b) =>
+        b.train_id === trainId
+        && b.journey_date === date
+        && b.booking_status === 'WAITLISTED'
+        && (!travelClass || b.travel_class === travelClass)
+      );
+      const maxPosition = Math.max(0, ...waitlistedBookings.map((booking) => booking.waitlist_position || 0));
+      return {
+        rows: [{ count: waitlistedBookings.length.toString(), max_position: maxPosition.toString() }],
+        rowCount: 1,
+      };
     }
 
     // 12. Seats Map for Train & Date
-    if (/SELECT seat_number, is_booked FROM seats WHERE train_id = \$1 AND journey_date = \$2/i.test(normalized)) {
+    if (/SELECT seat_number, is_booked FROM seats WHERE train_id = \$1 AND journey_date = \$2 AND \(\$3::text IS NULL OR travel_class = \$3\)/i.test(normalized)) {
       const trainId = Number(params[0]);
       const date = String(params[1]);
+      const travelClass = params[2] ? String(params[2]) : null;
       const matched = this.seats
-        .filter((s) => s.train_id === trainId && s.journey_date === date)
+        .filter((s) =>
+          s.train_id === trainId
+          && s.journey_date === date
+          && (!travelClass || s.travel_class === travelClass)
+        )
         .map((s) => ({ seat_number: s.seat_number, is_booked: s.is_booked }));
       return { rows: matched, rowCount: matched.length };
     }

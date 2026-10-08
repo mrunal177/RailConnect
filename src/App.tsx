@@ -79,6 +79,84 @@ const formatDisplayDate = (d: Date) => {
   return `${dayName}, ${dayNum} ${monthName}`;
 };
 
+type TrainScheduleStop = {
+  station: string;
+  arrival: string;
+  departure: string;
+  halt: string;
+  distanceKm: number;
+};
+
+const formatScheduleClock = (minutes: number) => {
+  const dayOffset = Math.floor(minutes / 1440);
+  const clock = `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+  return `${clock}${dayOffset > 0 ? ` +${dayOffset}d` : ''}`;
+};
+
+const getTrainScheduleStops = (train: any): TrainScheduleStop[] => {
+  if (train.route_json) {
+    try {
+      const route = JSON.parse(train.route_json);
+      const stops = Array.isArray(route) ? route : route?.stops;
+      if (Array.isArray(stops) && stops.length > 1) {
+        return stops.map((stop: any) => ({
+          station: String(stop.station || stop.stationName || stop.name || 'Station'),
+          arrival: stop.arrival ? String(stop.arrival) : '—',
+          departure: stop.departure ? String(stop.departure) : '—',
+          halt: stop.arrival && stop.departure ? 'Scheduled' : '—',
+          distanceKm: Number(stop.distanceKm ?? stop.distance ?? 0),
+        }));
+      }
+    } catch (error) {
+      console.warn('Unable to parse train route schedule:', error);
+    }
+  }
+
+  const departureMatch = String(train.departure_time || '08:00').match(/^(\d{1,2}):(\d{2})/);
+  const departureMinutes = departureMatch ? Number(departureMatch[1]) * 60 + Number(departureMatch[2]) : 480;
+  const durationMatch = String(train.duration || '').match(/(?:(\d+)d\s*)?(\d+)h\s*(\d+)m/i);
+  const durationMinutes = durationMatch
+    ? Number(durationMatch[1] || 0) * 1440 + Number(durationMatch[2]) * 60 + Number(durationMatch[3])
+    : 600;
+  const speed = Math.max(30, Number(train.speed_kmph) || 80);
+  const totalDistance = Math.round(speed * durationMinutes / 60);
+  const intermediateStations = [train.current_station, train.next_station]
+    .filter((station, index, all) =>
+      station
+      && station !== train.source
+      && station !== train.destination
+      && all.indexOf(station) === index
+    );
+  const stops: TrainScheduleStop[] = [{
+    station: `${train.source} JN`,
+    arrival: 'Source',
+    departure: formatScheduleClock(departureMinutes),
+    halt: '—',
+    distanceKm: 0,
+  }];
+
+  intermediateStations.forEach((station: string, index: number) => {
+    const progress = (index + 1) / (intermediateStations.length + 1);
+    const arrival = departureMinutes + Math.round(durationMinutes * progress);
+    stops.push({
+      station,
+      arrival: formatScheduleClock(arrival),
+      departure: formatScheduleClock(arrival + 3),
+      halt: '3 mins',
+      distanceKm: Math.round(totalDistance * progress),
+    });
+  });
+
+  stops.push({
+    station: `${train.destination} (DST)`,
+    arrival: formatScheduleClock(departureMinutes + durationMinutes),
+    departure: 'Destination',
+    halt: '—',
+    distanceKm: totalDistance,
+  });
+  return stops;
+};
+
 const calculateFare = (baseFare: string | number, tClass: string) => {
   const base = parseFloat(String(baseFare || '300'));
   let multiplier = 1.0;
@@ -93,11 +171,23 @@ const calculateFare = (baseFare: string | number, tClass: string) => {
 
 const ALL_CLASSES = [
   { code: 'SL', label: 'Sleeper' },
+  { code: '2S', label: 'Second Sitting' },
   { code: '3E', label: 'AC 3 Economy' },
   { code: '3A', label: 'AC 3 Tier' },
   { code: '2A', label: 'AC 2 Tier' },
   { code: '1A', label: 'AC First Class' },
+  { code: 'CC', label: 'AC Chair Car' },
+  { code: 'EC', label: 'Executive Chair Car' },
 ];
+
+const getTrainClasses = (train: { classes?: unknown }) =>
+  String(train.classes || '')
+    .split(',')
+    .map((value) => value.trim().toUpperCase())
+    .filter(Boolean);
+
+const getClassLabel = (classCode: string) =>
+  ALL_CLASSES.find((trainClass) => trainClass.code === classCode)?.label || classCode;
 
 const getAvailabilityTiles = (baseDateStr: string, train: any) => {
   const base = new Date(baseDateStr + 'T00:00:00');
@@ -142,6 +232,12 @@ const getAvailabilityTiles = (baseDateStr: string, train: any) => {
       label,
       statusText,
       statusType,
+      availableSeats: statusType === 'AVAILABLE'
+        ? Number(statusText.match(/\d+/)?.[0] || 0)
+        : 0,
+      waitlistPosition: statusType === 'WAITLIST'
+        ? Number(statusText.match(/\d+/)?.[0] || 0)
+        : 0,
     });
   }
   return tiles;
@@ -180,18 +276,30 @@ export default function App() {
   const [searchFrom, setSearchFrom] = useState('Mumbai');
   const [searchTo, setSearchTo] = useState('Delhi');
   const [searchDate, setSearchDate] = useState(getDefaultJourneyDate);
+  const [availabilityTileBaseDate, setAvailabilityTileBaseDate] = useState(getDefaultJourneyDate);
   const [travelClass, setTravelClass] = useState('3A');
   const [trainsList, setTrainsList] = useState<any[]>([]);
+  const [routeAvailableClasses, setRouteAvailableClasses] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchMessage, setSearchMessage] = useState<string | null>(null);
+  const isSameStationRoute = searchFrom.trim().toLowerCase() === searchTo.trim().toLowerCase();
 
   // Selected train & seat booking state
   const [selectedTrain, setSelectedTrain] = useState<any | null>(null);
+  const [selectedAvailability, setSelectedAvailability] = useState<{
+    trainId: number;
+    journeyDate: string;
+    travelClass: string;
+    status: 'AVAILABLE' | 'WAITLIST';
+    availableSeats: number;
+    waitlistPosition: number;
+  } | null>(null);
   const [seatMap, setSeatMap] = useState<any | null>(null);
   const [selectedSeat, setSelectedSeat] = useState<string | null>('A1');
   const [scheduleTrain, setScheduleTrain] = useState<any | null>(null);
-  const [passengerName, setPassengerName] = useState('Mrunal Baravkar');
-  const [passengerAge, setPassengerAge] = useState(24);
-  const [passengerGender, setPassengerGender] = useState('Male');
+  const [passengerName, setPassengerName] = useState('');
+  const [passengerAge, setPassengerAge] = useState('');
+  const [passengerGender, setPassengerGender] = useState('');
 
   // Checkout modal
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
@@ -232,21 +340,75 @@ export default function App() {
   };
 
   // Initial fetch: Search trains & load active tracking
-  const executeSearch = async () => {
+  const executeSearch = async (classOverride = travelClass) => {
+    setAvailabilityTileBaseDate(searchDate);
+    if (isSameStationRoute) {
+      setTrainsList([]);
+      setRouteAvailableClasses([]);
+      setSelectedTrain(null);
+      setSelectedAvailability(null);
+      setSeatMap(null);
+      setSearchMessage('Choose different origin and destination stations to search for trains.');
+      return;
+    }
+
     setIsSearching(true);
+    setRouteAvailableClasses([]);
+    setSearchMessage(null);
+    setTrainsList([]);
     try {
       const res = await fetch(
-        `/api/trains/search?from=${encodeURIComponent(searchFrom)}&to=${encodeURIComponent(searchTo)}&date=${searchDate}&travelClass=${travelClass}`
+        `/api/trains/search?from=${encodeURIComponent(searchFrom)}&to=${encodeURIComponent(searchTo)}&date=${searchDate}&travelClass=${classOverride}`
       );
-      if (res.ok) {
-        const data = await res.json();
-        setTrainsList(data);
-        if (data.length > 0 && !selectedTrain) {
-          handleSelectTrain(data[0]);
+      if (!res.ok) {
+        const error = await res.json().catch(() => null);
+        throw new Error(error?.error || `Train search failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      setTrainsList(data);
+
+      if (data.length > 0) {
+        const matchingTrain = selectedTrain && data.find((train: any) => train.id === selectedTrain.id);
+        if (matchingTrain) {
+          setSelectedTrain(matchingTrain);
+          setSelectedAvailability({
+            trainId: matchingTrain.id,
+            journeyDate: String(searchDate),
+            travelClass: classOverride,
+            status: matchingTrain.availableSeats > 0 ? 'AVAILABLE' : 'WAITLIST',
+            availableSeats: matchingTrain.availableSeats || 0,
+            waitlistPosition: matchingTrain.waitlistCount || 0,
+          });
+        } else {
+          setSelectedTrain(null);
+          setSelectedAvailability(null);
+          setSeatMap(null);
+          handleSelectTrain(data[0], classOverride);
+        }
+      } else {
+        setSelectedTrain(null);
+        setSelectedAvailability(null);
+        setSeatMap(null);
+
+        // A route can be served while not offering the selected coach class.
+        const routeRes = await fetch(
+          `/api/trains/search?from=${encodeURIComponent(searchFrom)}&to=${encodeURIComponent(searchTo)}&date=${searchDate}`
+        );
+        if (routeRes.ok) {
+          const routeTrains = await routeRes.json();
+          setRouteAvailableClasses(Array.from(
+            new Set(routeTrains.flatMap((train: any) => getTrainClasses(train)))
+          ));
         }
       }
     } catch (e) {
       console.error('Search error:', e);
+      setTrainsList([]);
+      setSelectedTrain(null);
+      setSelectedAvailability(null);
+      setSeatMap(null);
+      setSearchMessage(e instanceof Error ? e.message : 'Train search failed. Please try again.');
     } finally {
       setIsSearching(false);
     }
@@ -321,6 +483,19 @@ export default function App() {
     setSelectedTrain(train);
     const activeClass = chosenClass || travelClass;
     if (chosenClass) setTravelClass(chosenClass);
+    setSelectedAvailability((current) => {
+      if (current && current.trainId === train.id && current.journeyDate === searchDate) {
+        return { ...current, travelClass: activeClass };
+      }
+      return {
+        trainId: train.id,
+        journeyDate: searchDate,
+        travelClass: activeClass,
+        status: train.availableSeats > 0 ? 'AVAILABLE' : 'WAITLIST',
+        availableSeats: train.availableSeats || 0,
+        waitlistPosition: train.waitlistCount || 0,
+      };
+    });
     try {
       const res = await fetch(`/api/trains/${train.id}/seats?date=${searchDate}&travelClass=${activeClass}`);
       if (res.ok) {
@@ -350,8 +525,8 @@ export default function App() {
       body: JSON.stringify({
         trainId: selectedTrain.id,
         journeyDate: searchDate,
-        passengerName,
-        passengerAge,
+        passengerName: passengerName.trim(),
+        passengerAge: Number(passengerAge),
         passengerGender,
         seatNumber: selectedSeat,
         travelClass,
@@ -399,6 +574,15 @@ export default function App() {
       console.error('Cancel booking error:', e);
     }
   };
+
+  const scheduleStops = scheduleTrain ? getTrainScheduleStops(scheduleTrain) : [];
+  const currentSelectedAvailability = selectedAvailability
+    && selectedTrain
+    && selectedAvailability.trainId === selectedTrain.id
+    && selectedAvailability.journeyDate === searchDate
+    && selectedAvailability.travelClass === travelClass
+    ? selectedAvailability
+    : null;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
@@ -574,7 +758,13 @@ export default function App() {
                   <label className="block text-[11px] font-bold text-slate-700 mb-1">{t('fromStation')}</label>
                   <select
                     value={searchFrom}
-                    onChange={(e) => setSearchFrom(e.target.value)}
+                    onChange={(e) => {
+                      const nextFrom = e.target.value;
+                      setSearchFrom(nextFrom);
+                      if (nextFrom === searchTo) {
+                        setSearchTo(ALL_STATIONS.find((station) => station.value !== nextFrom)?.value || '');
+                      }
+                    }}
                     className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2.5 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
                   >
                     {ALL_STATIONS.map((st) => (
@@ -608,7 +798,7 @@ export default function App() {
                     className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2.5 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
                   >
                     {ALL_STATIONS.map((st) => (
-                      <option key={`to-${st.value}`} value={st.value}>
+                      <option key={`to-${st.value}`} value={st.value} disabled={st.value === searchFrom}>
                         {st.label}
                       </option>
                     ))}
@@ -636,8 +826,11 @@ export default function App() {
                     <option value="1A">AC First Class (1A)</option>
                     <option value="2A">AC 2 Tier (2A)</option>
                     <option value="3A">AC 3 Tier (3A)</option>
+                    <option value="3E">AC 3 Economy (3E)</option>
                     <option value="CC">AC Chair Car (CC)</option>
+                    <option value="EC">Executive Chair Car (EC)</option>
                     <option value="SL">Sleeper (SL)</option>
+                    <option value="2S">Second Sitting (2S)</option>
                   </select>
                 </div>
 
@@ -651,14 +844,20 @@ export default function App() {
                         resultsSection.scrollIntoView({ behavior: 'smooth' });
                       }
                     }}
-                    disabled={isSearching}
-                    className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 font-bold text-xs text-white flex items-center justify-center gap-2 shadow-md shadow-blue-600/30 transition-all cursor-pointer"
+                    disabled={isSearching || isSameStationRoute}
+                    className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-xs text-white flex items-center justify-center gap-2 shadow-md shadow-blue-600/30 transition-all cursor-pointer"
                   >
                     <Search className="w-4 h-4" />
                     <span>{isSearching ? t('findingTrains') : t('searchTrains')}</span>
                   </button>
                 </div>
               </div>
+
+              {isSameStationRoute && (
+                <p className="mt-2 text-center text-xs font-semibold text-amber-800" role="status">
+                  Choose different origin and destination stations to search for trains.
+                </p>
+              )}
 
               {/* Subtle Scroll Down Prompt Indicator */}
               <div
@@ -696,23 +895,52 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* RailRadar API Endpoint Indicator */}
                   <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/90 border border-slate-200/80 text-[11px] text-slate-700 shadow-xs">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="font-semibold text-slate-500">API:</span>
-                    <code className="text-blue-700 font-mono text-[10px]">
-                      api.railradar.in/v1/trains/between/{STATION_CODE_MAP[searchFrom] || searchFrom}/{STATION_CODE_MAP[searchTo] || searchTo}
-                    </code>
+                    <span className="w-2 h-2 rounded-full bg-blue-500" />
+                    <span className="font-semibold text-slate-600">Train schedules for {formatDisplayDate(new Date(searchDate + 'T00:00:00'))}</span>
                   </div>
                 </div>
+
+                {searchMessage && !isSameStationRoute && (
+                  <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800" role="status">
+                    {searchMessage}
+                  </p>
+                )}
 
                 {trainsList.length === 0 ? (
                   <div className="p-8 text-center bg-white rounded-3xl border border-slate-200 shadow-sm">
                     <AlertCircle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
-                    <h4 className="text-sm font-bold text-slate-800">No trains matching this specific route</h4>
-                    <p className="text-xs text-slate-500 mt-1">
-                      Try searching between major railway corridors like Mumbai and Delhi or Mumbai and Pune.
-                    </p>
+                    <h4 className="text-sm font-bold text-slate-800">
+                      {routeAvailableClasses.length > 0
+                        ? `No ${getClassLabel(travelClass)} (${travelClass}) coaches on this route`
+                        : 'No trains matching this specific route'}
+                    </h4>
+                    {routeAvailableClasses.length > 0 ? (
+                      <>
+                        <p className="text-xs text-slate-500 mt-1">
+                          {searchFrom} to {searchTo} is available in another class. Choose one to see trains.
+                        </p>
+                        <div className="flex flex-wrap justify-center gap-2 mt-4">
+                          {routeAvailableClasses.map((classCode) => (
+                            <button
+                              key={classCode}
+                              type="button"
+                              onClick={() => {
+                                setTravelClass(classCode);
+                                executeSearch(classCode);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200 text-xs font-bold text-blue-700 transition-colors cursor-pointer"
+                            >
+                              {getClassLabel(classCode)} ({classCode})
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-xs text-slate-500 mt-1">
+                        Try another station pair or travel class.
+                      </p>
+                    )}
                   </div>
                 ) : (
                   trainsList.map((train) => {
@@ -720,7 +948,7 @@ export default function App() {
 
                     if (isSelected) {
                       const currentFare = calculateFare(train.base_fare, travelClass);
-                      const tiles = getAvailabilityTiles(searchDate, train);
+                      const tiles = getAvailabilityTiles(availabilityTileBaseDate, train);
 
                       return (
                         <div
@@ -733,6 +961,11 @@ export default function App() {
                               <h4 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
                                 {train.train_name.toUpperCase()} ({train.train_number})
                               </h4>
+                              {train.train_type === 'Indicative Demo' && (
+                                <span className="mt-1 inline-flex rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
+                                  Indicative schedule
+                                </span>
+                              )}
                             </div>
 
                             <div className="flex items-center gap-4 text-xs">
@@ -788,7 +1021,8 @@ export default function App() {
                           {/* Row 3: Class Selection Tabs */}
                           <div className="flex items-center justify-between border-b border-slate-200 pt-2 overflow-x-auto">
                             <div className="flex items-center gap-1 sm:gap-2">
-                              {ALL_CLASSES.map((cls) => {
+                              {getTrainClasses(train).map((classCode) => {
+                                const cls = { code: classCode, label: getClassLabel(classCode) };
                                 const isActive = travelClass === cls.code;
                                 return (
                                   <button
@@ -827,7 +1061,17 @@ export default function App() {
                               return (
                                 <div
                                   key={idx}
-                                  onClick={() => setSearchDate(tile.dateStr)}
+                                  onClick={() => {
+                                    setSearchDate(tile.dateStr);
+                                    setSelectedAvailability({
+                                      trainId: train.id,
+                                      journeyDate: tile.dateStr,
+                                      travelClass,
+                                      status: tile.statusType === 'WAITLIST' ? 'WAITLIST' : 'AVAILABLE',
+                                      availableSeats: tile.availableSeats,
+                                      waitlistPosition: tile.waitlistPosition,
+                                    });
+                                  }}
                                   className={`p-3 rounded-2xl border transition-all cursor-pointer ${
                                     isCurrent
                                       ? 'bg-amber-50/50 border-amber-400 ring-2 ring-amber-300/40'
@@ -997,11 +1241,12 @@ export default function App() {
                         <input
                           type="text"
                           value={passengerName}
+                          required
                           onFocus={(e) => {
                             if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
                           }}
                           onChange={(e) => setPassengerName(e.target.value)}
-                          placeholder="Mrunal Baravkar"
+                          placeholder="Enter passenger name"
                           className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-colors"
                         />
                       </div>
@@ -1016,10 +1261,11 @@ export default function App() {
                             value={passengerAge}
                             min={1}
                             max={120}
+                            required
                             onFocus={(e) => {
                               if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
                             }}
-                            onChange={(e) => setPassengerAge(parseInt(e.target.value, 10) || 1)}
+                            onChange={(e) => setPassengerAge(e.target.value)}
                             className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-colors"
                           />
                         </div>
@@ -1029,12 +1275,14 @@ export default function App() {
                           </label>
                           <select
                             value={passengerGender}
+                            required
                             onFocus={(e) => {
                               if (!requireAuthentication('enter passenger details')) e.currentTarget.blur();
                             }}
                             onChange={(e) => setPassengerGender(e.target.value)}
                             className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-colors cursor-pointer"
                           >
+                            <option value="" disabled>Select gender</option>
                             <option value="Male">Male</option>
                             <option value="Female">Female</option>
                             <option value="Other">Other</option>
@@ -1047,6 +1295,17 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           if (requireAuthentication('proceed to payment')) {
+                            const age = Number(passengerAge);
+                            if (
+                              !passengerName.trim()
+                              || !Number.isInteger(age)
+                              || age < 1
+                              || age > 120
+                              || !passengerGender
+                            ) {
+                              alert('Please enter the passenger name, a valid age, and gender.');
+                              return;
+                            }
                             if (!selectedSeat) setSelectedSeat('A1');
                             setIsPaymentOpen(true);
                           }
@@ -1060,11 +1319,18 @@ export default function App() {
 
                     {/* AI Confirmation Engine Card (Matching Reference Screenshot 2) */}
                     <WaitlistPredictorCard
+                      trainId={selectedTrain.id}
                       trainNumber={selectedTrain.train_number}
                       trainName={selectedTrain.train_name}
-                      currentWaitlist={selectedTrain.waitlistCount || 12}
-                      journeyDate={searchDate}
-                      travelClass={travelClass}
+                      currentWaitlist={currentSelectedAvailability?.status === 'WAITLIST'
+                        ? currentSelectedAvailability.waitlistPosition
+                        : 0}
+                      journeyDate={currentSelectedAvailability
+                        ? currentSelectedAvailability.journeyDate
+                        : searchDate}
+                      travelClass={currentSelectedAvailability
+                        ? currentSelectedAvailability.travelClass
+                        : travelClass}
                       totalSeats={selectedTrain.total_seats}
                     />
                   </>
@@ -1478,7 +1744,7 @@ export default function App() {
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600">
-                  Indian Railways Timetable
+                  {scheduleTrain.train_type === 'Indicative Demo' ? 'Indicative Demo Timetable' : 'Indicative Train Timetable'}
                 </span>
                 <h3 className="text-base font-black text-slate-900">
                   {scheduleTrain.train_name} ({scheduleTrain.train_number})
@@ -1507,44 +1773,27 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  <tr>
-                    <td className="py-2.5 font-bold text-slate-800">{scheduleTrain.source} JN (SRC)</td>
-                    <td className="py-2.5 text-slate-400">Source</td>
-                    <td className="py-2.5 font-mono font-bold text-slate-900">{scheduleTrain.departure_time}</td>
-                    <td className="py-2.5 text-slate-400">--</td>
-                    <td className="py-2.5 text-right font-mono text-slate-600">0 km</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 font-bold text-slate-800">
-                      {scheduleTrain.current_station || 'Intermediate Junction'}
-                    </td>
-                    <td className="py-2.5 font-mono text-slate-700">19:30</td>
-                    <td className="py-2.5 font-mono text-slate-700">19:35</td>
-                    <td className="py-2.5 text-slate-500">5 mins</td>
-                    <td className="py-2.5 text-right font-mono text-slate-600">260 km</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 font-bold text-slate-800">
-                      {scheduleTrain.next_station || 'Major Transit Junction'}
-                    </td>
-                    <td className="py-2.5 font-mono text-slate-700">21:15</td>
-                    <td className="py-2.5 font-mono text-slate-700">21:20</td>
-                    <td className="py-2.5 text-slate-500">5 mins</td>
-                    <td className="py-2.5 text-right font-mono text-slate-600">490 km</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 font-bold text-slate-800">{scheduleTrain.destination} (DST)</td>
-                    <td className="py-2.5 font-mono font-bold text-slate-900">{scheduleTrain.arrival_time}</td>
-                    <td className="py-2.5 text-slate-400">Dest.</td>
-                    <td className="py-2.5 text-slate-400">--</td>
-                    <td className="py-2.5 text-right font-mono text-slate-600">1384 km</td>
-                  </tr>
+                  {scheduleStops.map((stop, index) => (
+                    <tr key={`${stop.station}-${index}`}>
+                      <td className="py-2.5 font-bold text-slate-800">{stop.station}</td>
+                      <td className={`py-2.5 font-mono ${index === 0 ? 'text-slate-400' : 'text-slate-700'}`}>
+                        {stop.arrival}
+                      </td>
+                      <td className={`py-2.5 font-mono ${index === scheduleStops.length - 1 ? 'text-slate-400' : 'text-slate-700'}`}>
+                        {stop.departure}
+                      </td>
+                      <td className="py-2.5 text-slate-500">{stop.halt}</td>
+                      <td className="py-2.5 text-right font-mono text-slate-600">
+                        {stop.distanceKm.toLocaleString()} km
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
 
             <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-              <span>Runs with Pantry Car & High-Speed LHB Coaches</span>
+              <span>Indicative times; verify the official timetable before travel.</span>
               <button
                 type="button"
                 onClick={() => setScheduleTrain(null)}
