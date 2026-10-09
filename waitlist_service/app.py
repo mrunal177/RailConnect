@@ -1,4 +1,4 @@
-"""Vercel Python function for waitlist probability inference."""
+"""FastAPI service for trained waitlist probability inference."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from ml.waitlist.predictor import InvalidFeatures, predict_confirmation
 
 
 logger = logging.getLogger(__name__)
-app = FastAPI()
+app = FastAPI(title="RailConnect Waitlist Predictor")
 
 
 class PredictionRequest(BaseModel):
@@ -179,6 +179,11 @@ def prepare_features_from_database(
     }
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "waitlist-predictor"}
+
+
 @app.post("/", response_model=PredictionResponse)
 def predict_waitlist(request: PredictionRequest) -> dict[str, Any]:
     try:
@@ -203,19 +208,25 @@ def predict_waitlist(request: PredictionRequest) -> dict[str, Any]:
         logger.info("Waitlist prediction unavailable: %s", error)
         raise HTTPException(
             status_code=503,
-            detail="Unable to calculate confirmation probability",
+            detail=str(error),
         ) from error
     except FileNotFoundError as error:
         logger.error("Waitlist prediction model is unavailable")
         raise HTTPException(
             status_code=503,
-            detail="Unable to calculate confirmation probability",
+            detail="Trained waitlist model is unavailable",
         ) from error
     except HTTPException:
         raise
-    except (psycopg.Error, RuntimeError, ValueError) as error:
+    except psycopg.Error as error:
+        logger.exception("Waitlist prediction database query failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to read booking history from the database; check waitlist service logs",
+        ) from error
+    except (RuntimeError, ValueError) as error:
         logger.exception("Waitlist prediction failed")
         raise HTTPException(
             status_code=503,
-            detail="Unable to calculate confirmation probability",
+            detail="Waitlist prediction failed; check waitlist service logs",
         ) from error

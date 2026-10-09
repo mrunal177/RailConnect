@@ -77,9 +77,9 @@ Interactive satellite/vector map featuring:
 # 1. Install dependencies
 npm install
 
-# 2. Install the trained waitlist API dependencies with Python 3.12
+# 2. Install the waitlist service dependencies with Python 3.12
 python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements-dev.txt
 
 # 3. Configure environment variables in .env (or run in AI Studio)
 npm run dev
@@ -89,7 +89,8 @@ http://localhost:3000
 ```
 
 Local development starts both the Express application and the trained waitlist
-prediction API. Waitlist probabilities require `DATABASE_URL` and recorded
+prediction API at `http://127.0.0.1:8001`. Waitlist probabilities require
+`DATABASE_URL` and recorded
 booking history for the selected train and class; when that train has no class
 history, the predictor uses recorded history for the same class on other trains.
 If there is no history for that class, it reports that a prediction is unavailable.
@@ -128,6 +129,30 @@ changes; neither can remain only on a developer's machine.
 5. Run `schema.sql`, `indexes.sql`, `functions.sql`, `triggers.sql`,
    `views.sql`, and `seed.sql` against the production Supabase database, in that
    order, before the first deployment.
+
+### Deploy the waitlist predictor to Render
+
+The Python waitlist predictor is a separate Render web service. The repository's
+`render.yaml` builds only `waitlist_service/requirements.txt` and starts the ASGI
+app; the selected model is read from `ml/models/waitlist_model.pkl`. Training
+data, training scripts, and unused model files are not runtime dependencies.
+
+1. In Render, create a Blueprint from this repository and select `render.yaml`,
+   or create a Python web service with the same build and start commands shown
+   there. Set the service root to the repository root.
+2. Add `DATABASE_URL` to the Render service's environment, using the Supabase
+   PostgreSQL connection URI. Keep it private and do not use a `VITE_` prefix.
+3. Deploy the service and verify `https://<render-service>.onrender.com/health`
+   returns `{"status":"ok","service":"waitlist-predictor"}`.
+4. In Vercel **Project Settings → Environment Variables**, set the server-only
+   `WAITLIST_PREDICTION_API_URL` to the Render service base URL, for example
+   `https://<render-service>.onrender.com/`. Do not prefix it with `VITE_`.
+   Set it for Production and Preview as applicable, then redeploy Vercel.
+
+The browser continues to call the same `POST /api/ml/waitlist/predict` endpoint.
+The Express function proxies the request to Render, preserving its request and
+response contract. Local development keeps using the local service on port 8001
+unless `WAITLIST_PREDICTION_API_URL` is set in the server environment.
 
 After deployment, verify these paths on the production domain:
 

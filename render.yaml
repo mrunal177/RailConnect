@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: railconnect-waitlist-predictor
+    runtime: python
+    buildCommand: pip install -r waitlist_service/requirements.txt
+    startCommand: uvicorn waitlist_service.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.15
+      - key: DATABASE_URL
+        sync: false

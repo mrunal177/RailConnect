@@ -979,9 +979,16 @@ export async function createApp(serveFrontend = false) {
   // 8. ML PREDICTION ENDPOINTS
   // ----------------------------------------------------
   app.post('/api/ml/waitlist/predict', async (req: Request, res: Response) => {
+    const predictionApiUrl = process.env.WAITLIST_PREDICTION_API_URL?.trim();
+    if (!predictionApiUrl && process.env.VERCEL) {
+      return res.status(503).json({
+        detail: 'Waitlist prediction service is not configured. Set WAITLIST_PREDICTION_API_URL in the Vercel server environment.',
+      });
+    }
+
     try {
       const predictionResponse = await fetch(
-        process.env.WAITLIST_PREDICTION_API_URL || 'http://127.0.0.1:8001/',
+        predictionApiUrl || 'http://127.0.0.1:8001/',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

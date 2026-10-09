@@ -10,3 +10,11 @@ coverage/
 service-account.json
 .vercel
 .env*.local
+.agents/skills/
+__pycache__/
+.venv/
+ml/data/
+ml/models/waitlist_logistic_model.pkl
+ml/models/waitlist_xgboost_model.pkl
+ml/waitlist/metrics.json
+ml/waitlist/model_comparison.json

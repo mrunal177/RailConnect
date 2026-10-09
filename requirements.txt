@@ -4,4 +4,3 @@ numpy==2.0.2
 pandas==2.3.3
 psycopg[binary]>=3.2,<4
 scikit-learn==1.9.1
-uvicorn>=0.34,<1

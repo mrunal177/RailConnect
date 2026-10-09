@@ -52,7 +52,7 @@ const waitForPredictionApi = async (child: ChildProcess) => {
 const start = async () => {
   const predictionApi = spawn(
     pythonCommand,
-    ['-m', 'uvicorn', 'api.ml-waitlist-predict:app', '--host', '127.0.0.1', '--port', '8001'],
+    ['-m', 'uvicorn', 'waitlist_service.app:app', '--host', '127.0.0.1', '--port', '8001'],
     { stdio: 'inherit', env: childEnv }
   );
   children.push(predictionApi);
